@@ -220,11 +220,12 @@
     }
     state.drewThisTurn = true;
     scheduleStartDraw(); // 少し間を置いて手番開始の+2（決定論モードは即時）
-    // お邪魔カードで薬瓶を壊されていたら、手番開始時に「割れる演出」で知らせる（render後に表示）
+    // お邪魔カードで薬瓶を壊されていたら、手番開始時に「割れる演出」で知らせる
+    // body 直下に出すので、この後の自動ドローの render が走っても消えない（確認を押すまで残る）
     if (state.players[i].notice && state.players[i].notice.length) {
       const names = state.players[i].notice;
       state.players[i].notice = null;
-      setTimeout(() => showBottleBrokenNotice(names), 80);
+      showBottleBrokenNotice(names);
     }
   }
 
@@ -240,13 +241,13 @@
         <p class="broken-text">あなたの薬瓶「${names.join("」「")}」が<b>破壊</b>され、<br>中の生薬は<b>あなたの捨て札</b>に移りました。<br><span class="broken-sub">（「大収穫」で山札に戻して立て直せます）</span></p>
         <button id="broken-ok" class="primary-btn">確認</button>
       </div>`;
-    $("#app").appendChild(overlay);
+    document.body.appendChild(overlay); // #app 内だと自動ドローの render で消えるので body 直下に出す（確認を押すまで残す）
     document.getElementById("broken-ok").addEventListener("click", () => overlay.remove());
   }
   // 「収穫カード」を引き当てたとき、かわいいイラストをふわっと表示（少しで自動的に消える）
   function harvestFlash(added) {
     if (!added || !added.length) return;
-    if (window.KAMPO_DECK || window.KAMPO_ACTIONS) return; // テスト（決定論）モードでは出さない
+    if ((window.KAMPO_DECK || window.KAMPO_ACTIONS) && !window.KAMPO_FORCE_FLASH) return; // テスト（決定論）モードでは既定で出さない
     const drew = added.some((uid) => {
       const c = state.hand.find((x) => x.uid === uid);
       return c && c.id === "act:harvest";
@@ -260,7 +261,7 @@
       <img class="harvest-illust" src="harvest.png" alt="収穫" onerror="this.remove()">
       <div class="harvest-flash-cap">🌿 収穫カードを引いた！</div>
     </div>`;
-    $("#app").appendChild(el);
+    document.body.appendChild(el); // #app 内だと render で消えるので body 直下に出す
     setTimeout(() => { if (el.parentNode) el.remove(); }, 1900);
   }
 
@@ -272,9 +273,10 @@
     const doDraw = () => {
       drawTimer = null;
       if (!state || state.finished || !state.currentSymptom) return;
-      state.justDrawn = drawTo(Math.min(CONFIG.handHard, state.hand.length + CONFIG.drawPerTurn));
-      render();
-      harvestFlash(state.justDrawn); // 収穫カードを引き当てたらイラストをふわっと表示
+      const added = drawTo(Math.min(CONFIG.handHard, state.hand.length + CONFIG.drawPerTurn));
+      state.justDrawn = added;
+      render(); // render の最後で state.justDrawn は空にされるので、控えの added を使う
+      harvestFlash(added); // 収穫カードを引き当てたらイラストをふわっと表示
     };
     const delay = (window.KAMPO_DECK || window.KAMPO_ACTIONS) ? 0 : (CONFIG.turnDrawDelayMs || 0);
     if (delay > 0) drawTimer = setTimeout(doDraw, delay);
@@ -1214,8 +1216,7 @@
       <div id="toast" class="toast hidden"></div>
     `;
 
-    // 引いたカードが横スクロールの右に隠れないよう、手札を右端へ寄せる
-    if (justDrew) { const hg = $(".hand-grid"); if (hg) hg.scrollLeft = hg.scrollWidth; }
+    // 手札は折り返し表示なので横スクロールの右寄せは不要（削除済み）
     // 登場アニメは一度きり：この後の再描画（カード選択など）で再生されないようクリア
     state.justDrawn = [];
 
