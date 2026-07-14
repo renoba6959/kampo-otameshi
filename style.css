@@ -17,11 +17,26 @@
 * { box-sizing: border-box; }
 html, body {
   margin: 0;
-  background: var(--paper);
   color: var(--ink);
   font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", system-ui, sans-serif;
 }
+/* 背景イラスト（漢方薬局）。固定・全面カバー */
+body {
+  min-height: 100vh;
+  background: url("bg.png") center center / cover no-repeat fixed, var(--paper);
+}
+/* 読みやすさ用のうすい和紙スクリム（イラストを少し落ち着かせる） */
+body::before {
+  content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background: rgba(245, 239, 225, .40);
+}
 #app { max-width: 1040px; margin: 0 auto; padding: 16px 18px 60px; }
+/* テキストが背景に直接乗る画面（スタート・同意・準備）は、うすい和紙パネルで読みやすく */
+.start-screen, .consent-screen {
+  background: rgba(247, 241, 228, .90);
+  border-radius: 16px; padding: 18px 20px 26px; margin-top: 12px;
+  box-shadow: 0 6px 30px rgba(0, 0, 0, .22);
+}
 
 /* ---- トップバー ---- */
 .topbar {
@@ -155,8 +170,9 @@ html, body {
 .primary-btn:active { transform: translateY(1px); }
 .primary-btn:disabled { background: #c3b8a2; cursor: not-allowed; box-shadow: none; }
 .ghost-btn {
-  background: transparent; color: var(--ink-soft); cursor: pointer;
+  background: rgba(255, 253, 246, .94); color: var(--ink); cursor: pointer;
   border: 1px solid var(--line); padding: 8px 16px; border-radius: 24px; font-size: 14px;
+  box-shadow: var(--shadow);
 }
 .ghost-btn:hover { background: #fff; }
 .ghost-btn:disabled { opacity: .5; cursor: not-allowed; }
@@ -449,6 +465,16 @@ html, body {
 .mode-btn:hover { transform: translateY(-2px); }
 .mode-btn.selected { color: #fff; background: var(--accent); border-color: var(--accent); }
 .mode-note { font-size: 12px; color: var(--ink-soft); text-align: center; margin: 0 0 12px; }
+.vs-setup-hint {
+  font-size: 13px; color: var(--ink); text-align: center; line-height: 1.6;
+  background: #eef4ee; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin: 4px 0;
+}
+.vs-name-row { display: flex; align-items: center; gap: 8px; font-weight: 700; color: var(--ink); margin: 4px 0 12px; }
+.vs-name-input {
+  flex: 1; font-size: 16px; padding: 10px 12px; border: 1.5px solid var(--line);
+  border-radius: 10px; background: #fffdf6; color: var(--ink);
+}
+.vs-name-input:focus { outline: none; border-color: var(--accent); }
 
 /* ---- 対戦：目隠し（交代）画面 ---- */
 .handoff-overlay { background: var(--accent); } /* 不透明に近い覆いで前の手札を隠す */

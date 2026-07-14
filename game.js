@@ -54,6 +54,8 @@
   let deckPrefs = { harvest: CONFIG.harvestCardCopies, daishukaku: CONFIG.bigHarvestCardCopies, herbs: {} };
   // スタート画面で選んだモード： "solo"（1人）／ "vs"（同じ端末で2人交代）
   let selectedMode = "solo";
+  // 選択中のテーマ（モード切替で再描画しても保持する）
+  let selectedThemes = ["kaze"];
 
   // ---- 便利関数 ---------------------------------------------------
   const herbById = Object.fromEntries(herbs.map(h => [h.id, h]));
@@ -95,20 +97,21 @@
 
   // デッキ構成（与えた生薬idの一覧から各 deckCopies 枚を積む）
   // window.KAMPO_DECK = { herbId: 枚数, ... } を定義すればその枚数を優先する。
-  function buildDeck(herbIds) {
+  function buildDeck(herbIds, prefs) {
+    prefs = prefs || deckPrefs;             // 対戦は各プレイヤーの編集内容を渡す
     const recipe = window.KAMPO_DECK || null;
     const deck = [];
     for (const id of herbIds) {
       const n = recipe && Number.isFinite(recipe[id]) ? recipe[id]
-        : Number.isFinite(deckPrefs.herbs[id]) ? deckPrefs.herbs[id]
+        : Number.isFinite(prefs.herbs[id]) ? prefs.herbs[id]
         : CONFIG.deckCopies;
       for (let i = 0; i < n; i++) deck.push(id);
     }
-    // 補助カードの枚数：テストフック(KAMPO_ACTIONS) ＞ プレイヤーのデッキ編集(deckPrefs) ＞ 既定(CONFIG)
+    // 補助カードの枚数：テストフック(KAMPO_ACTIONS) ＞ プレイヤーのデッキ編集(prefs) ＞ 既定(CONFIG)
     const actConf = window.KAMPO_ACTIONS || null;
     const actionCount = (key, def) =>
       (actConf && Number.isFinite(actConf[key])) ? actConf[key]
-      : (deckPrefs && Number.isFinite(deckPrefs[key])) ? deckPrefs[key]
+      : (prefs && Number.isFinite(prefs[key])) ? prefs[key]
       : def;
     const harvestN = actionCount("harvest", CONFIG.harvestCardCopies);
     for (let i = 0; i < harvestN; i++) deck.push("act:harvest");
@@ -138,7 +141,8 @@
   // ---- ゲーム状態 -------------------------------------------------
   let state;
 
-  function newGame(themeIds, mode) {
+  // 対戦のセットアップ結果： [{name, prefs}, {name, prefs}]（各プレイヤーの名前と編集済みデッキ）
+  function newGame(themeIds, mode, vsSetup) {
     const sel = themeSelection(themeIds);
     const isVs = mode === "vs";
     state = {
@@ -160,10 +164,15 @@
       // --- 対戦メタ ---
       active: 0,
       players: null,       // 対戦：[盤スナップショット0, 盤スナップショット1]
-      playerNames: isVs ? ["プレイヤー1", "プレイヤー2"] : null,
+      playerNames: isVs
+        ? [(vsSetup && vsSetup[0].name) || "プレイヤー1", (vsSetup && vsSetup[1].name) || "プレイヤー2"]
+        : null,
     };
     if (isVs) {
-      state.players = [makeBoard(sel), makeBoard(sel)]; // 各自の山札・手札・棚・得点
+      // 各自の編集デッキで盤を作る（vsSetup が無ければ既定 deckPrefs）
+      const prefs0 = vsSetup ? vsSetup[0].prefs : null;
+      const prefs1 = vsSetup ? vsSetup[1].prefs : null;
+      state.players = [makeBoard(sel, prefs0), makeBoard(sel, prefs1)];
       nextRound();     // round=1・お題セット（対戦はここでは引かない）
       beginTurn(0);    // 先手＝プレイヤー1が初手を引く
     } else {
@@ -176,9 +185,9 @@
   // ---- 対戦：盤（プレイヤーの持ち物）を入れ替える仕組み ----------------
   // アクティブ盤は state の下記フィールドに入る。手番交代で退避／復元する。
   const BOARD_FIELDS = ["deck", "discard", "hand", "shelf", "roundTurn", "drewThisTurn", "score", "log", "usedActions", "roundOf"];
-  function makeBoard(sel) {
+  function makeBoard(sel, prefs) {
     return {
-      deck: shuffle(buildDeck(sel.herbIds)),
+      deck: shuffle(buildDeck(sel.herbIds, prefs)),
       discard: [], hand: [], shelf: [],
       roundTurn: 1, drewThisTurn: false, score: 0, log: [], usedActions: [], roundOf: 0,
     };
@@ -237,7 +246,7 @@
   function updateDeckTotal() {
     const el = document.querySelector("#deck-total");
     if (!el) return;
-    const ids = getCheckedThemes();
+    const ids = selectedThemes;
     if (ids.length === 0) { el.textContent = ""; return; }
     const sel = themeSelection(ids);
     const herbTotal = sel.herbIds.reduce((sum, id) => sum + herbCountOf(id), 0);
@@ -245,11 +254,71 @@
     el.textContent = `デッキ合計 ${herbTotal + aux} 枚（生薬 ${herbTotal} ＋ 補助 ${aux}）`;
   }
 
+  // デッキ編集UIのHTML（スタート画面・対戦の準備画面で共用）
+  function deckEditorHTML() {
+    return `
+        <div class="deck-editor">
+          <div class="deck-editor-title">デッキ編集</div>
+
+          <div class="de-section-title">補助カード</div>
+          <div class="deck-editor-row">
+            <span class="de-name"><span class="de-titleline">🟡 収穫カード<span class="de-max">（最大${CONFIG.deckCardMax}枚）</span></span><span class="de-desc">山札から生薬を最大${CONFIG.harvestPick}枚 指名して手札へ</span></span>
+            <span class="de-stepper">
+              <button type="button" class="de-step" data-card="harvest" data-delta="-1">−</button>
+              <b id="de-harvest">${deckPrefs.harvest}</b>
+              <button type="button" class="de-step" data-card="harvest" data-delta="1">＋</button>
+            </span>
+          </div>
+          <div class="deck-editor-row">
+            <span class="de-name"><span class="de-titleline">🟢 大収穫カード<span class="de-max">（最大${CONFIG.deckCardMax}枚）</span></span><span class="de-desc">捨て札を全部 山札へ戻す</span></span>
+            <span class="de-stepper">
+              <button type="button" class="de-step" data-card="daishukaku" data-delta="-1">−</button>
+              <b id="de-daishukaku">${deckPrefs.daishukaku}</b>
+              <button type="button" class="de-step" data-card="daishukaku" data-delta="1">＋</button>
+            </span>
+          </div>
+
+          <div class="de-section-title">生薬カード
+            <span class="de-presets">
+              <button type="button" id="de-omakase" class="de-preset-btn primary">おまかせ（初心者用）</button>
+              <button type="button" id="de-flat3" class="de-preset-btn">各3枚にする</button>
+            </span>
+          </div>
+          <p class="de-note">初期は「おまかせ」＝このテーマを全部クリアできる最低枚数。0にすると外せます（上級者向け）。</p>
+          <div id="deck-editor-herbs"></div>
+          <p class="de-total" id="deck-total"></p>
+        </div>`;
+  }
+
+  // デッキ編集UIのイベント配線（テーマは selectedThemes を参照）
+  function wireDeckEditor(root) {
+    root.querySelectorAll(".de-step").forEach(b => b.addEventListener("click", () => {
+      const card = b.dataset.card;
+      const next = deckPrefs[card] + Number(b.dataset.delta);
+      deckPrefs[card] = Math.max(0, Math.min(CONFIG.deckCardMax, next));
+      const el = document.querySelector("#de-" + card);
+      if (el) el.textContent = deckPrefs[card];
+      updateDeckTotal();
+    }));
+    root.querySelector("#de-omakase")?.addEventListener("click", () => {
+      if (selectedThemes.length === 0) return;
+      deckPrefs.herbs = guaranteeCounts(selectedThemes);
+      renderDeckEditor();
+    });
+    root.querySelector("#de-flat3")?.addEventListener("click", () => {
+      if (selectedThemes.length === 0) return;
+      themeSelection(selectedThemes).herbIds.forEach(id => deckPrefs.herbs[id] = CONFIG.deckCopies);
+      renderDeckEditor();
+    });
+    renderDeckEditor();
+    updateDeckTotal();
+  }
+
   // 生薬エディタ（テーマに応じて動的）を描画
   function renderDeckEditor() {
     const body = document.querySelector("#deck-editor-herbs");
     if (!body) return;
-    const ids = getCheckedThemes();
+    const ids = selectedThemes;
     if (ids.length === 0) {
       body.innerHTML = `<p class="de-note">テーマを選ぶと、生薬の枚数を編集できます。</p>`;
       updateDeckTotal();
@@ -324,7 +393,7 @@
             const n = formulas.filter(f => f.theme === t.id).length;
             return `
               <label class="theme-item">
-                <input type="checkbox" class="theme-check" value="${t.id}" ${t.id === "kaze" ? "checked" : ""}>
+                <input type="checkbox" class="theme-check" value="${t.id}" ${selectedThemes.includes(t.id) ? "checked" : ""}>
                 <span class="theme-body">
                   <span class="theme-name">${t.name} <span class="theme-count">${n}方剤</span></span>
                   <span class="theme-desc">${t.desc}</span>
@@ -333,39 +402,10 @@
               </label>`;
           }).join("")}
         </div>
-        <div class="deck-editor">
-          <div class="deck-editor-title">デッキ編集</div>
-
-          <div class="de-section-title">補助カード</div>
-          <div class="deck-editor-row">
-            <span class="de-name"><span class="de-titleline">🟡 収穫カード<span class="de-max">（最大${CONFIG.deckCardMax}枚）</span></span><span class="de-desc">山札から生薬を最大${CONFIG.harvestPick}枚 指名して手札へ</span></span>
-            <span class="de-stepper">
-              <button type="button" class="de-step" data-card="harvest" data-delta="-1">−</button>
-              <b id="de-harvest">${deckPrefs.harvest}</b>
-              <button type="button" class="de-step" data-card="harvest" data-delta="1">＋</button>
-            </span>
-          </div>
-          <div class="deck-editor-row">
-            <span class="de-name"><span class="de-titleline">🟢 大収穫カード<span class="de-max">（最大${CONFIG.deckCardMax}枚）</span></span><span class="de-desc">捨て札を全部 山札へ戻す</span></span>
-            <span class="de-stepper">
-              <button type="button" class="de-step" data-card="daishukaku" data-delta="-1">−</button>
-              <b id="de-daishukaku">${deckPrefs.daishukaku}</b>
-              <button type="button" class="de-step" data-card="daishukaku" data-delta="1">＋</button>
-            </span>
-          </div>
-
-          <div class="de-section-title">生薬カード
-            <span class="de-presets">
-              <button type="button" id="de-omakase" class="de-preset-btn primary">おまかせ（初心者用）</button>
-              <button type="button" id="de-flat3" class="de-preset-btn">各3枚にする</button>
-            </span>
-          </div>
-          <p class="de-note">初期は「おまかせ」＝このテーマを全部クリアできる最低枚数。0にすると外せます（上級者向け）。</p>
-          <div id="deck-editor-herbs"></div>
-          <p class="de-total" id="deck-total"></p>
-        </div>
+        ${selectedMode === "solo" ? deckEditorHTML() : `
+        <p class="vs-setup-hint">対戦では、このあと<b>各プレイヤーが自分の名前とデッキ</b>を設定します（相手には見えません）。</p>`}
         <p class="start-note" id="start-note"></p>
-        <button id="start-btn" class="primary-btn">この内容であそぶ</button>
+        <button id="start-btn" class="primary-btn">${selectedMode === "vs" ? "プレイヤーの準備へ →" : "この内容であそぶ"}</button>
         ${CONFIG.requireConsent ? "" : `<p class="disclaimer">⚠ 本アプリは漢方を楽しく学ぶための教育・娯楽目的の試作です。医療上の診断・治療・処方の助言ではありません。体調不良は医師・薬剤師にご相談ください。生薬の性質・方剤の効能などの記載は学習用のたたき台で、監修中の内容を含みます。</p>`}
       </div>
       <div id="toast" class="toast hidden"></div>
@@ -373,6 +413,7 @@
 
     const refresh = () => {
       const ids = getCheckedThemes();
+      selectedThemes = ids;                 // 選択テーマを保持（モード切替の再描画で復元）
       const note = $("#start-note");
       const btn = $("#start-btn");
       if (ids.length === 0) {
@@ -391,13 +432,9 @@
     };
 
     app.querySelectorAll(".mode-btn").forEach(b => b.addEventListener("click", () => {
+      selectedThemes = getCheckedThemes();          // 選択テーマを保持
       selectedMode = b.dataset.mode === "vs" ? "vs" : "solo";
-      // その場でモード表示だけ更新（テーマ選択・デッキ編集は維持）
-      app.querySelectorAll(".mode-btn").forEach(x => x.classList.toggle("selected", x.dataset.mode === selectedMode));
-      const note = $(".mode-note");
-      if (note) note.textContent = selectedMode === "vs"
-        ? "同じ端末を交代で使います（目隠し→交代）。同じお題を先に解いた方が高得点。"
-        : "1人でじっくり。テーマの症状を解いて診療結果をめざします。";
+      showStartScreen();                            // 再描画（対戦はデッキ編集を隠す）
     }));
     app.querySelectorAll(".theme-check").forEach(el => el.addEventListener("change", refresh));
     app.querySelectorAll("[data-detail]").forEach(b => b.addEventListener("click", (e) => {
@@ -405,30 +442,71 @@
       e.stopPropagation();
       openThemeDetail(b.dataset.detail);
     }));
-    app.querySelectorAll(".de-step").forEach(b => b.addEventListener("click", () => {
-      const card = b.dataset.card;
-      const next = deckPrefs[card] + Number(b.dataset.delta);
-      deckPrefs[card] = Math.max(0, Math.min(CONFIG.deckCardMax, next));
-      $("#de-" + card).textContent = deckPrefs[card];
-      updateDeckTotal();
-    }));
-    $("#de-omakase").addEventListener("click", () => {
-      const ids = getCheckedThemes();
-      if (ids.length === 0) return;
-      deckPrefs.herbs = guaranteeCounts(ids);
-      renderDeckEditor();
-    });
-    $("#de-flat3").addEventListener("click", () => {
-      const ids = getCheckedThemes();
-      if (ids.length === 0) return;
-      themeSelection(ids).herbIds.forEach(id => deckPrefs.herbs[id] = CONFIG.deckCopies);
-      renderDeckEditor();
-    });
+    if (selectedMode === "solo") wireDeckEditor(app);   // ソロのデッキ編集を配線
     $("#start-btn").addEventListener("click", () => {
       const ids = getCheckedThemes();
-      if (ids.length > 0) newGame(ids, selectedMode);
+      if (ids.length === 0) return;
+      selectedThemes = ids;
+      if (selectedMode === "vs") startVsSetup(ids);     // 対戦：各自の準備画面へ
+      else newGame(ids, "solo");
     });
     refresh();
+  }
+
+  // ---- 対戦：各プレイヤーの準備（名前＋デッキ編集）を1人ずつ ----------
+  let vsSetup = null; // [{name, prefs}, {name, prefs}]
+  function startVsSetup(themeIds) {
+    selectedThemes = themeIds.slice();
+    vsSetup = [{ name: "", prefs: null }, { name: "", prefs: null }];
+    deckPrefs = { harvest: CONFIG.harvestCardCopies, daishukaku: CONFIG.bigHarvestCardCopies, herbs: guaranteeCounts(themeIds) };
+    showVsSetup(0);
+  }
+  // クローン（各プレイヤーのデッキ編集を独立保存するため）
+  const clonePrefs = (p) => ({ harvest: p.harvest, daishukaku: p.daishukaku, herbs: { ...p.herbs } });
+
+  function showVsSetup(i) {
+    const app = $("#app");
+    const isLast = i === 1;
+    app.innerHTML = `
+      <div class="start-screen">
+        <h1>対戦の準備<span class="edition-badge">プレイヤー${i + 1}</span></h1>
+        <p class="mode-note">名前を入れて、あなたのデッキを編集してください（相手には見えません）。</p>
+        <label class="vs-name-row">お名前：
+          <input type="text" id="vs-name" class="vs-name-input" maxlength="12" placeholder="プレイヤー${i + 1}" value="${vsSetup[i].name}">
+        </label>
+        ${deckEditorHTML()}
+        <p class="start-note" id="start-note"></p>
+        <button id="vs-setup-btn" class="primary-btn">${isLast ? "対戦を始める" : "決定（プレイヤー2の準備へ）→"}</button>
+      </div>
+      <div id="toast" class="toast hidden"></div>`;
+    wireDeckEditor(app);
+    $("#vs-setup-btn").addEventListener("click", () => {
+      vsSetup[i].name = ($("#vs-name").value || "").trim() || `プレイヤー${i + 1}`;
+      vsSetup[i].prefs = clonePrefs(deckPrefs);
+      if (isLast) {
+        newGame(selectedThemes, "vs", vsSetup);
+      } else {
+        // プレイヤー2用に既定デッキへリセットして、目隠しで交代
+        deckPrefs = { harvest: CONFIG.harvestCardCopies, daishukaku: CONFIG.bigHarvestCardCopies, herbs: guaranteeCounts(selectedThemes) };
+        showSetupHandoff(1);
+      }
+    });
+  }
+
+  // 準備の交代（目隠し）：相手にデッキ編集を見られないよう受け渡す
+  function showSetupHandoff(next) {
+    const app = $("#app");
+    app.innerHTML = `
+      <div class="overlay handoff-overlay" style="position:static;min-height:70vh;">
+        <div class="handoff-modal">
+          <div class="handoff-icon">🙈</div>
+          <p class="handoff-lead">準備を交代します</p>
+          <p class="handoff-name">「プレイヤー${next + 1}」に画面を渡してください</p>
+          <p class="handoff-note">相手のデッキが見えないよう、渡してから押してください。</p>
+          <button id="setup-handoff-btn" class="primary-btn">プレイヤー${next + 1}：準備する</button>
+        </div>
+      </div>`;
+    $("#setup-handoff-btn").addEventListener("click", () => showVsSetup(next));
   }
 
   // テーマの「詳細」：そのテーマの方剤一覧（構成生薬つき）をモーダル表示
