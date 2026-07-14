@@ -273,6 +273,7 @@ html, body {
   border: 1.5px solid rgba(255,255,255,.28);
   box-shadow: inset 0 0 0 3px rgba(255,255,255,.08);
   animation: backHide .62s step-end var(--dd, 0ms) both;
+  pointer-events: none; /* 裏面は見た目だけ。クリックはカード/ボタンへ透過させる（押せない不具合の修正）*/
 }
 /* 山札カウンタ（上部の数字）が減ったときのパルス */
 @keyframes deckPulse {
@@ -439,6 +440,51 @@ html, body {
 .consent-check input { width: 18px; height: 18px; cursor: pointer; }
 .consent-box .primary-btn { width: 100%; }
 .consent-box .primary-btn:disabled { opacity: .5; cursor: not-allowed; }
+.mode-select { display: flex; gap: 10px; justify-content: center; margin: 6px 0 4px; }
+.mode-btn {
+  flex: 1; max-width: 200px; padding: 12px 10px; font-size: 15px; font-weight: 700;
+  color: var(--ink-soft); background: #fffdf6; border: 1.5px solid var(--line);
+  border-radius: 12px; cursor: pointer; transition: transform .08s, border-color .1s, background .1s;
+}
+.mode-btn:hover { transform: translateY(-2px); }
+.mode-btn.selected { color: #fff; background: var(--accent); border-color: var(--accent); }
+.mode-note { font-size: 12px; color: var(--ink-soft); text-align: center; margin: 0 0 12px; }
+
+/* ---- 対戦：目隠し（交代）画面 ---- */
+.handoff-overlay { background: var(--accent); } /* 不透明に近い覆いで前の手札を隠す */
+.handoff-modal {
+  background: #fffdf6; border-radius: 18px; padding: 32px 28px; text-align: center;
+  max-width: 420px; width: 100%; box-shadow: 0 12px 40px rgba(0,0,0,.4);
+}
+.handoff-icon { font-size: 52px; }
+.handoff-lead { font-size: 15px; color: var(--ink-soft); margin-top: 6px; }
+.handoff-name { font-size: 22px; font-weight: 800; color: var(--accent); margin: 8px 0; }
+.handoff-note { font-size: 12px; color: var(--ink-soft); margin-bottom: 18px; }
+.handoff-modal .primary-btn { width: 100%; }
+
+/* ---- 対戦バー（両者の得点・手番）---- */
+.vs-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  background: #fff; border: 1.5px solid var(--line); border-radius: 12px;
+  padding: 8px 12px; margin-bottom: 12px;
+}
+.vs-player { display: flex; flex-direction: column; align-items: center; min-width: 90px; padding: 4px 8px; border-radius: 10px; }
+.vs-player span { font-size: 12px; color: var(--ink-soft); font-weight: 700; }
+.vs-player b { font-size: 22px; color: var(--ink); }
+.vs-player.active { background: var(--accent); }
+.vs-player.active span, .vs-player.active b { color: #fff; }
+.vs-turn { font-size: 13px; font-weight: 800; color: var(--accent); text-align: center; }
+
+/* ---- 対戦：勝敗画面 ---- */
+.vs-result { border-top-color: var(--accent) !important; }
+.vs-result-title { font-size: 26px; font-weight: 800; color: var(--accent); margin-bottom: 16px; }
+.vs-result-scores { display: flex; align-items: center; justify-content: center; gap: 16px; margin-bottom: 8px; }
+.vs-result-p { display: flex; flex-direction: column; align-items: center; padding: 12px 16px; border-radius: 12px; border: 1.5px solid var(--line); }
+.vs-result-p span { font-size: 13px; color: var(--ink-soft); font-weight: 700; }
+.vs-result-p b { font-size: 32px; color: var(--ink); }
+.vs-result-p.win { border-color: var(--accent); background: #eef4ee; box-shadow: 0 0 0 3px var(--accent); }
+.vs-result-mid { font-size: 16px; color: var(--ink-soft); font-weight: 700; }
+.result-who { font-size: 15px; font-weight: 800; color: var(--accent); margin-bottom: 6px; }
 .start-screen h1 { color: var(--accent); font-size: 26px; margin-bottom: 8px; }
 .start-screen h1 span { color: var(--ink); }
 .start-lead {

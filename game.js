@@ -52,6 +52,8 @@
 
   // デッキ編集で選んだ枚数（スタート画面で調整）。herbs は { 生薬id: 枚数 }
   let deckPrefs = { harvest: CONFIG.harvestCardCopies, daishukaku: CONFIG.bigHarvestCardCopies, herbs: {} };
+  // スタート画面で選んだモード： "solo"（1人）／ "vs"（同じ端末で2人交代）
+  let selectedMode = "solo";
 
   // ---- 便利関数 ---------------------------------------------------
   const herbById = Object.fromEntries(herbs.map(h => [h.id, h]));
@@ -136,32 +138,77 @@
   // ---- ゲーム状態 -------------------------------------------------
   let state;
 
-  function newGame(themeIds) {
+  function newGame(themeIds, mode) {
     const sel = themeSelection(themeIds);
+    const isVs = mode === "vs";
     state = {
+      mode: isVs ? "vs" : "solo",           // "solo"=1人 ／ "vs"=同じ端末で2人交代
       themeIds: themeIds.slice(),           // 今回選ばれたテーマ
-      deck: shuffle(buildDeck(sel.herbIds)), // テーマの生薬だけで濃く組んだ山札
-      discard: [],         // 捨て札置き場（生薬id専用）。「大収穫カード」で山札へ戻せる
+      // --- 共有：お題まわり ---
       symptomPile: shuffle(sel.activeSymptoms.map(s => s.id)),
       totalRounds: Math.min(sel.activeSymptoms.length, CONFIG.maxRounds),
-      hand: [],            // [{uid, id}]  手札の生薬
-      shelf: [],           // [{uid, formulaId, herbs:[...]}]  棚の薬瓶
-      pot: { hand: [], bottles: [] }, // 調合エリア（選択中の手札uid・薬瓶uid）
-      round: 0,            // 何ラウンド目か（1始まり表示）
-      roundTurn: 1,        // このお題での経過手番（早解き用・「ターンを終える」で+1）
-      drewThisTurn: false, // この手番でもうドローしたか（ドローは1手番に1回）
-      score: 0,
-      log: [],
+      round: 0,            // 何ラウンド目か（1始まり表示・共有）
       currentSymptom: null,
       hintOpen: false,
       finished: false,
-      nextUid: 1,
-      justDrawn: [],       // 直近のドローで新しく引いたカードのuid（登場アニメ用・render後にクリア）
-      usedActions: [],     // 消費した補助カードのid（表示専用・大収穫では戻さない＝再利用不可）
+      nextUid: 1,          // uidは全体で一意（盤をまたいでも衝突しない）
+      // --- アクティブ盤（ソロ＝唯一の盤／対戦＝手番プレイヤーの盤）---
+      deck: [], discard: [], hand: [], shelf: [],
+      pot: { hand: [], bottles: [] },
+      roundTurn: 1, drewThisTurn: false, score: 0, log: [],
+      justDrawn: [], usedActions: [], roundOf: 0,
+      // --- 対戦メタ ---
+      active: 0,
+      players: null,       // 対戦：[盤スナップショット0, 盤スナップショット1]
+      playerNames: isVs ? ["プレイヤー1", "プレイヤー2"] : null,
     };
-    nextRound(); // round=1・お題セット・手札を初手6枚まで補充
+    if (isVs) {
+      state.players = [makeBoard(sel), makeBoard(sel)]; // 各自の山札・手札・棚・得点
+      nextRound();     // round=1・お題セット（対戦はここでは引かない）
+      beginTurn(0);    // 先手＝プレイヤー1が初手を引く
+    } else {
+      state.deck = shuffle(buildDeck(sel.herbIds));
+      nextRound();     // round=1・お題セット・手札を初手6枚まで補充
+    }
     render();
   }
+
+  // ---- 対戦：盤（プレイヤーの持ち物）を入れ替える仕組み ----------------
+  // アクティブ盤は state の下記フィールドに入る。手番交代で退避／復元する。
+  const BOARD_FIELDS = ["deck", "discard", "hand", "shelf", "roundTurn", "drewThisTurn", "score", "log", "usedActions", "roundOf"];
+  function makeBoard(sel) {
+    return {
+      deck: shuffle(buildDeck(sel.herbIds)),
+      discard: [], hand: [], shelf: [],
+      roundTurn: 1, drewThisTurn: false, score: 0, log: [], usedActions: [], roundOf: 0,
+    };
+  }
+  function saveBoard(i) { const b = state.players[i]; for (const f of BOARD_FIELDS) b[f] = state[f]; }
+  function loadBoard(i) {
+    const b = state.players[i];
+    for (const f of BOARD_FIELDS) state[f] = b[f];
+    state.pot = { hand: [], bottles: [] };
+    state.justDrawn = [];
+    state.hintOpen = false;
+    state.active = i;
+  }
+  // プレイヤー i の手番を始める。そのお題での初手番なら初手を引く。
+  function beginTurn(i) {
+    loadBoard(i);
+    if (state.roundOf !== state.round) { // このお題に初めて着手＝初手を引く
+      state.roundOf = state.round;
+      state.roundTurn = 1;
+      state.drewThisTurn = false;
+      state.justDrawn = drawTo(Math.max(state.hand.length, CONFIG.handStart));
+    }
+  }
+  // 現在の盤を退避して、目隠し画面を挟み、next の手番を始める
+  function handoffTo(next) {
+    saveBoard(state.active);
+    showHandoff(next);
+  }
+  // 対戦の現在得点（アクティブは live の state.score、相手は保存済み）
+  const scoreOf = (i) => (i === state.active ? state.score : (state.players ? state.players[i].score : 0));
 
   // ---- スタート画面（テーマ選択）---------------------------------
   function getCheckedThemes() {
@@ -262,6 +309,13 @@
     app.innerHTML = `
       <div class="start-screen">
         <h1>学んで効く！<span>漢方カードバトル</span>${CONFIG.editionLabel ? `<span class="edition-badge">${CONFIG.editionLabel}</span>` : ""}</h1>
+        <div class="mode-select">
+          <button type="button" class="mode-btn ${selectedMode === "solo" ? "selected" : ""}" data-mode="solo">🧑 ソロ</button>
+          <button type="button" class="mode-btn ${selectedMode === "vs" ? "selected" : ""}" data-mode="vs">🧑‍🤝‍🧑 2人対戦</button>
+        </div>
+        <p class="mode-note">${selectedMode === "vs"
+          ? "同じ端末を交代で使います（目隠し→交代）。同じお題を先に解いた方が高得点。"
+          : "1人でじっくり。テーマの症状を解いて診療結果をめざします。"}</p>
         <p class="start-lead">今回あそぶ<b>テーマ</b>を選んでください。選んだテーマの症状だけが出て、
           デッキもそのテーマに必要な生薬だけで組まれます。<br>
           テーマを多く選ぶほどデッキが薄まり、<b>難しく</b>なります。</p>
@@ -336,6 +390,15 @@
       renderDeckEditor();
     };
 
+    app.querySelectorAll(".mode-btn").forEach(b => b.addEventListener("click", () => {
+      selectedMode = b.dataset.mode === "vs" ? "vs" : "solo";
+      // その場でモード表示だけ更新（テーマ選択・デッキ編集は維持）
+      app.querySelectorAll(".mode-btn").forEach(x => x.classList.toggle("selected", x.dataset.mode === selectedMode));
+      const note = $(".mode-note");
+      if (note) note.textContent = selectedMode === "vs"
+        ? "同じ端末を交代で使います（目隠し→交代）。同じお題を先に解いた方が高得点。"
+        : "1人でじっくり。テーマの症状を解いて診療結果をめざします。";
+    }));
     app.querySelectorAll(".theme-check").forEach(el => el.addEventListener("change", refresh));
     app.querySelectorAll("[data-detail]").forEach(b => b.addEventListener("click", (e) => {
       e.preventDefault();   // ラベル内のボタンなのでチェックのトグルを止める
@@ -363,7 +426,7 @@
     });
     $("#start-btn").addEventListener("click", () => {
       const ids = getCheckedThemes();
-      if (ids.length > 0) newGame(ids);
+      if (ids.length > 0) newGame(ids, selectedMode);
     });
     refresh();
   }
@@ -467,8 +530,6 @@
 
   function nextRound() {
     state.round += 1;
-    state.roundTurn = 1;
-    state.drewThisTurn = false;
     state.pot = { hand: [], bottles: [] };
     state.hintOpen = false;
     if (state.round > state.totalRounds || state.symptomPile.length === 0) {
@@ -477,8 +538,31 @@
       return;
     }
     state.currentSymptom = symptomById[state.symptomPile.pop()];
-    // ラウンド開始時、手札が初手枚数を下回っていたら補充（持ち越しは維持）
+    if (state.mode === "vs") return; // 対戦：ドロー/手番は beginTurn 側で（呼び出し元が先手を決める）
+    // ソロ：ラウンド開始時、手札が初手枚数を下回っていたら補充（持ち越しは維持）
+    state.roundTurn = 1;
+    state.drewThisTurn = false;
     state.justDrawn = drawTo(Math.max(state.hand.length, CONFIG.handStart));
+  }
+
+  // 対戦：目隠し（交代）画面。相手に手札を見られないよう、渡してから表示する
+  function showHandoff(next) {
+    const overlay = document.createElement("div");
+    overlay.className = "overlay handoff-overlay";
+    overlay.innerHTML = `
+      <div class="handoff-modal">
+        <div class="handoff-icon">🙈</div>
+        <p class="handoff-lead">手番を交代します</p>
+        <p class="handoff-name">「${state.playerNames[next]}」に画面を渡してください</p>
+        <p class="handoff-note">相手に手札を見られないよう、渡してから下のボタンを押してください。</p>
+        <button id="handoff-btn" class="primary-btn">${state.playerNames[next]}：準備OK（表示する）</button>
+      </div>`;
+    $("#app").appendChild(overlay);
+    document.getElementById("handoff-btn").addEventListener("click", () => {
+      overlay.remove();
+      beginTurn(next);
+      render();
+    });
   }
 
   const handByUid = (uid) => state.hand.find(c => c.uid === uid);
@@ -695,6 +779,7 @@
     state.roundTurn += 1;
     state.drewThisTurn = false;
     state.pot = { hand: [], bottles: [] };
+    if (state.mode === "vs") { handoffTo(1 - state.active); return; } // 相手に手番を渡す
     render();
   }
 
@@ -727,12 +812,29 @@
       match, bonus, sizeBonus, total, roundMax,
     });
     consumePot();
-    showRoundResult(f, match, bonus, sizeBonus, total);
+    if (state.mode === "vs") {
+      // 対戦：先に解いた側がこのお題を獲得。次のお題は勝者が「後攻」＝相手が先手。
+      showRoundResult(f, match, bonus, sizeBonus, total, () => {
+        const winner = state.active;
+        nextRound();
+        if (state.finished) { saveBoard(winner); render(); return; }
+        handoffTo(1 - winner);
+      });
+      return;
+    }
+    showRoundResult(f, match, bonus, sizeBonus, total, () => { nextRound(); render(); });
   }
 
-  // このお題を見送る（0点）
+  // このお題を見送る（ソロ=0点で次へ／対戦=両者スキップで次のお題へ）
   function passRound() {
     if (state.finished || !state.currentSymptom) return;
+    if (state.mode === "vs") {
+      const other = 1 - state.active;
+      nextRound();
+      if (state.finished) { saveBoard(state.active); render(); return; }
+      handoffTo(other); // 相手が次のお題の先手
+      return;
+    }
     state.log.push({
       round: state.round,
       symptomText: state.currentSymptom.text,
@@ -800,7 +902,7 @@
     const app = $("#app");
 
     if (state.finished) {
-      app.innerHTML = resultScreenHTML();
+      app.innerHTML = state.mode === "vs" ? vsResultScreenHTML() : resultScreenHTML();
       $("#restart-btn").addEventListener("click", showStartScreen);
       return;
     }
@@ -851,6 +953,13 @@
           <span class="stat">捨て札 <b>${state.discard.length}</b></span>
         </div>
       </header>
+
+      ${state.mode === "vs" ? `
+      <section class="vs-bar">
+        <div class="vs-player ${state.active === 0 ? "active" : ""}"><span>${state.playerNames[0]}</span><b>${scoreOf(0)}</b></div>
+        <div class="vs-turn">🎯 ${state.playerNames[state.active]} の番</div>
+        <div class="vs-player ${state.active === 1 ? "active" : ""}"><span>${state.playerNames[1]}</span><b>${scoreOf(1)}</b></div>
+      </section>` : ""}
 
       <section class="symptom-card">
         <div class="symptom-label">症状カード（患者さんの訴え）</div>
@@ -910,7 +1019,7 @@
           ${state.hand.length > CONFIG.handSoft ? "disabled" : ""}>
           ターンを終える（次の手番へ・早解き -1）
         </button>
-        <button id="pass-btn" class="ghost-btn danger">このお題を見送る（0点）</button>
+        <button id="pass-btn" class="ghost-btn danger">${state.mode === "vs" ? "このお題を流す（両者0点で次へ）" : "このお題を見送る（0点）"}</button>
       </section>
 
       <section class="hand-area">
@@ -974,13 +1083,15 @@
   }
 
   // 提出結果をモーダル表示 → 次のお題へ
-  function showRoundResult(formula, match, bonus, sizeBonus, total) {
+  function showRoundResult(formula, match, bonus, sizeBonus, total, onNext) {
     const app = $("#app");
     const overlay = document.createElement("div");
     overlay.className = "overlay";
     const gradeClass = match === 3 ? "grade-3" : match === 2 ? "grade-2" : match === 1 ? "grade-1" : "grade-0";
+    const whoHTML = state.mode === "vs" ? `<div class="result-who">${state.playerNames[state.active]} が獲得！</div>` : "";
     overlay.innerHTML = `
       <div class="result-modal ${gradeClass}">
+        ${whoHTML}
         <div class="result-formula">${formula.name}<span>${formula.kana}</span></div>
         <div class="result-grade">${matchLabel[match]}</div>
         <div class="result-score-break">
@@ -991,14 +1102,32 @@
         <div class="result-points">合計 +${total}<span>点</span></div>
         <p class="result-note">${formula.note || ""}</p>
         <p class="result-genten">出典：${formula.genten || "―"}${formula.base && formulaById[formula.base] ? `／類方：${formulaById[formula.base].name}` : ""}</p>
-        <button id="next-btn" class="primary-btn">次の患者さんへ →</button>
+        <button id="next-btn" class="primary-btn">${state.mode === "vs" ? "次のお題へ →" : "次の患者さんへ →"}</button>
       </div>`;
     app.appendChild(overlay);
     document.getElementById("next-btn").addEventListener("click", () => {
       overlay.remove();
-      nextRound();
-      render();
+      if (onNext) onNext();
+      else { nextRound(); render(); }
     });
+  }
+
+  // 対戦の勝敗画面（合計点で勝敗）
+  function vsResultScreenHTML() {
+    const s0 = state.players[0].score, s1 = state.players[1].score;
+    const winner = s0 === s1 ? null : (s0 > s1 ? 0 : 1);
+    const title = winner === null ? "引き分け！" : `🏆 ${state.playerNames[winner]} の勝ち！`;
+    return `
+      <div class="result-modal vs-result grade-${winner === null ? 0 : 3}">
+        <div class="vs-result-title">${title}</div>
+        <div class="vs-result-scores">
+          <div class="vs-result-p ${winner === 0 ? "win" : ""}"><span>${state.playerNames[0]}</span><b>${s0}</b>点</div>
+          <div class="vs-result-mid">vs</div>
+          <div class="vs-result-p ${winner === 1 ? "win" : ""}"><span>${state.playerNames[1]}</span><b>${s1}</b>点</div>
+        </div>
+        <p class="result-note">同じお題を早く正しく解いた側が得点。合計点で勝敗が決まります。</p>
+        <button id="restart-btn" class="primary-btn">もう一度あそぶ</button>
+      </div>`;
   }
 
   function resultScreenHTML() {
