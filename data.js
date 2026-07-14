@@ -522,8 +522,7 @@
     "hint": "実証・太陽病。汗なし＋項背部のこわばりが決め手。",
     "score": {
       "kakkonto": 3,
-      "maoto": 2,
-      "kakkonto_senkyu_shini": 1
+      "maoto": 2
     }
   },
   {
@@ -532,8 +531,7 @@
     "hint": "実証・太陽病傷寒。強い悪寒＋身体痛＋無汗。",
     "score": {
       "maoto": 3,
-      "kakkonto": 2,
-      "maobushisaishinto": 1
+      "kakkonto": 2
     }
   },
   {
@@ -568,7 +566,6 @@
     "hint": "気血両虚＋心肺の衰え。病後の衰弱に不眠・不安・健忘を伴う。",
     "score": {
       "ninjinyoeito": 3,
-      "juzentaihoto": 1,
       "shikunshito": 1
     }
   },
