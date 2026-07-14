@@ -234,6 +234,7 @@
     overlay.className = "overlay";
     overlay.innerHTML = `
       <div class="broken-modal">
+        <img class="broken-illust" src="jama.png" alt="招かれざる客" onerror="this.remove()">
         <div class="broken-anim"><span class="broken-bottle">🫙</span><span class="broken-burst">💥</span></div>
         <div class="broken-title">🐭 招かれざる客！</div>
         <p class="broken-text">あなたの薬瓶「${names.join("」「")}」が<b>破壊</b>され、<br>中の生薬は<b>あなたの捨て札</b>に移りました。<br><span class="broken-sub">（「大収穫」で山札に戻して立て直せます）</span></p>
@@ -242,6 +243,27 @@
     $("#app").appendChild(overlay);
     document.getElementById("broken-ok").addEventListener("click", () => overlay.remove());
   }
+  // 「収穫カード」を引き当てたとき、かわいいイラストをふわっと表示（少しで自動的に消える）
+  function harvestFlash(added) {
+    if (!added || !added.length) return;
+    if (window.KAMPO_DECK || window.KAMPO_ACTIONS) return; // テスト（決定論）モードでは出さない
+    const drew = added.some((uid) => {
+      const c = state.hand.find((x) => x.uid === uid);
+      return c && c.id === "act:harvest";
+    });
+    if (!drew) return;
+    const old = document.querySelector(".harvest-flash");
+    if (old) old.remove();
+    const el = document.createElement("div");
+    el.className = "harvest-flash";
+    el.innerHTML = `<div class="harvest-flash-inner">
+      <img class="harvest-illust" src="harvest.png" alt="収穫" onerror="this.remove()">
+      <div class="harvest-flash-cap">🌿 収穫カードを引いた！</div>
+    </div>`;
+    $("#app").appendChild(el);
+    setTimeout(() => { if (el.parentNode) el.remove(); }, 1900);
+  }
+
   // 手番開始の自動ドロー(+2)を「少し間を置いて」実行する（配り/切替のあと引く感じを出す）。
   // 決定論モード（KAMPO_DECK/KAMPO_ACTIONS指定時）は遅延なしで即引く（テスト用）。
   let drawTimer = null;
@@ -252,6 +274,7 @@
       if (!state || state.finished || !state.currentSymptom) return;
       state.justDrawn = drawTo(Math.min(CONFIG.handHard, state.hand.length + CONFIG.drawPerTurn));
       render();
+      harvestFlash(state.justDrawn); // 収穫カードを引き当てたらイラストをふわっと表示
     };
     const delay = (window.KAMPO_DECK || window.KAMPO_ACTIONS) ? 0 : (CONFIG.turnDrawDelayMs || 0);
     if (delay > 0) drawTimer = setTimeout(doDraw, delay);
