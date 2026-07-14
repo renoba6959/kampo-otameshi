@@ -179,9 +179,13 @@ body::before {
 
 /* ---- 手札 ---- */
 .hand-label { font-size: 12px; color: var(--ink-soft); margin-bottom: 8px; letter-spacing: .04em; }
+/* 手札は1行の横スクロール（枚数が増えても縦に伸びず段差が出ない） */
 .hand-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px;
+  display: flex; gap: 10px; overflow-x: auto; overflow-y: hidden;
+  padding-bottom: 8px; align-items: stretch;
+  scroll-behavior: smooth;
 }
+.hand-grid .herb-card { flex: 0 0 128px; }
 .herb-card {
   position: relative; background: #fffdf6; border: 1.5px solid var(--line);
   border-radius: 12px; padding: 10px 10px 12px; cursor: pointer;
@@ -342,6 +346,36 @@ body::before {
 .herb-card.action-big { border-top-color: var(--accent-2); background: #f0f5f0; }
 .action-big .action-badge { background: var(--accent-2); }
 .action-big .use-action-btn { background: var(--accent-2); }
+/* お邪魔カード（招かれざる客）は赤系で区別。長い名前は1行に収める */
+.herb-card.action-jama { border-top-color: var(--warm); background: #fbeeeb; }
+.action-jama .herb-name { font-size: 16px; white-space: nowrap; }
+.action-jama .action-badge { background: var(--warm); }
+.action-jama .use-action-btn { background: var(--warm); }
+
+/* ---- 薬瓶が破壊されたお知らせ（割れる演出）---- */
+.broken-modal {
+  background: #fffdf6; border-radius: 18px; padding: 26px 28px; text-align: center;
+  max-width: 380px; width: 100%; box-shadow: 0 12px 40px rgba(0,0,0,.4); border-top: 8px solid var(--warm);
+}
+.broken-anim { position: relative; height: 72px; display: flex; align-items: center; justify-content: center; }
+.broken-bottle { position: absolute; font-size: 56px; animation: bottleShake 1s ease forwards; }
+.broken-burst { position: absolute; font-size: 60px; opacity: 0; animation: burstPop 1s ease forwards; }
+@keyframes bottleShake {
+  0% { transform: translateX(0) rotate(0); }
+  8%, 24%, 40% { transform: translateX(-7px) rotate(-9deg); }
+  16%, 32%, 48% { transform: translateX(7px) rotate(9deg); }
+  60% { transform: translateX(0) rotate(0) scale(1); opacity: 1; }
+  100% { transform: translateY(26px) rotate(26deg) scale(.45); opacity: 0; }
+}
+@keyframes burstPop {
+  0%, 52% { opacity: 0; transform: scale(.3); }
+  64% { opacity: 1; transform: scale(1.35); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.broken-title { font-size: 20px; font-weight: 800; color: var(--warm); margin-top: 6px; }
+.broken-text { font-size: 14px; line-height: 1.7; color: var(--ink); margin: 10px 0 18px; }
+.broken-sub { font-size: 12px; color: var(--ink-soft); }
+.broken-modal .primary-btn { width: 100%; }
 
 /* ---- 収穫カードの生薬えらびモーダル ---- */
 .harvest-modal {
@@ -423,7 +457,7 @@ body::before {
 
 @media (max-width: 560px) {
   .symptom-text { font-size: 16px; }
-  .hand-grid { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); }
+  .hand-grid .herb-card { flex: 0 0 108px; }
   .herb-name { font-size: 19px; }
 }
 
@@ -469,6 +503,7 @@ body::before {
   font-size: 13px; color: var(--ink); text-align: center; line-height: 1.6;
   background: #eef4ee; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin: 4px 0;
 }
+.vs-back-btn { display: inline-block; margin-bottom: 10px; font-size: 13px; }
 .vs-name-row { display: flex; align-items: center; gap: 8px; font-weight: 700; color: var(--ink); margin: 4px 0 12px; }
 .vs-name-input {
   flex: 1; font-size: 16px; padding: 10px 12px; border: 1.5px solid var(--line);
@@ -499,6 +534,8 @@ body::before {
 .vs-player b { font-size: 22px; color: var(--ink); }
 .vs-player.active { background: var(--accent); }
 .vs-player.active span, .vs-player.active b { color: #fff; }
+.vs-sub { font-size: 11px; color: var(--ink-soft); margin-top: 1px; }
+.vs-player.active .vs-sub { color: rgba(255,255,255,.85); }
 .vs-turn { font-size: 13px; font-weight: 800; color: var(--accent); text-align: center; }
 
 /* ---- 対戦：勝敗画面 ---- */

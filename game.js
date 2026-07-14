@@ -28,6 +28,8 @@
     harvestPick: 5,     // 「収穫カード」で山札から指名できる生薬の最大数（調整可）
     harvestCardCopies: 3, // デッキに入れる「収穫カード」の既定枚数（デッキ編集の初期値）
     bigHarvestCardCopies: 2, // デッキに入れる「大収穫カード」の既定枚数（デッキ編集の初期値）
+    jamaCardCopies: 1,       // 対戦：デッキに入れる「お邪魔カード（招かれざる客）」の既定枚数
+    turnDrawDelayMs: 1200,   // 手番開始の自動ドロー(+2)を、配り/切替の少しあとに出す間（ms）
     deckCardMax: 3,     // デッキ編集で補助カードを入れられる上限（各種類）
     herbMax: 9,         // デッキ編集で生薬を入れられる上限（各種類。0にすると外せる）
     editionLabel: "",   // 版の表示ラベル（例：お試し版）。空なら非表示。KAMPO_CONFIGで上書き
@@ -46,6 +48,10 @@
     "act:daishukaku": {
       name: "大収穫", kana: "だいしゅうかく",
       copy: "捨て札をすべて山札に戻してシャッフル",
+    },
+    "act:jama": {
+      name: "招かれざる客", kana: "まねかれざるきゃく",
+      copy: "相手の薬瓶を1つ壊す",
     },
   };
   const isAction = (id) => typeof id === "string" && id.startsWith("act:");
@@ -117,6 +123,9 @@
     for (let i = 0; i < harvestN; i++) deck.push("act:harvest");
     const bigN = actionCount("daishukaku", CONFIG.bigHarvestCardCopies);
     for (let i = 0; i < bigN; i++) deck.push("act:daishukaku");
+    // お邪魔カードは対戦専用（prefs.jama を指定したときだけ入る。ソロは未指定＝0）
+    const jamaN = actionCount("jama", 0);
+    for (let i = 0; i < jamaN; i++) deck.push("act:jama");
     return deck;
   }
 
@@ -201,23 +210,63 @@
     state.hintOpen = false;
     state.active = i;
   }
-  // プレイヤー i の手番を始める。そのお題での初手番なら初手を引く。
+  // プレイヤー i の手番を始める。初手番は開幕の手札を配り、2回目以降は自動で+2枚ドロー。
   function beginTurn(i) {
     loadBoard(i);
-    if (state.roundOf !== state.round) { // このお題に初めて着手＝初手を引く
+    if (state.roundOf !== state.round) { // このお題に初めて着手＝初手番。まず開幕を配る
       state.roundOf = state.round;
       state.roundTurn = 1;
-      state.drewThisTurn = false;
       state.justDrawn = drawTo(Math.max(state.hand.length, CONFIG.handStart));
     }
+    state.drewThisTurn = true;
+    scheduleStartDraw(); // 少し間を置いて手番開始の+2（決定論モードは即時）
+    // お邪魔カードで薬瓶を壊されていたら、手番開始時に「割れる演出」で知らせる（render後に表示）
+    if (state.players[i].notice && state.players[i].notice.length) {
+      const names = state.players[i].notice;
+      state.players[i].notice = null;
+      setTimeout(() => showBottleBrokenNotice(names), 80);
+    }
   }
+
+  // 薬瓶が破壊されたお知らせ（瓶が割れるアニメつき）
+  function showBottleBrokenNotice(names) {
+    const overlay = document.createElement("div");
+    overlay.className = "overlay";
+    overlay.innerHTML = `
+      <div class="broken-modal">
+        <div class="broken-anim"><span class="broken-bottle">🫙</span><span class="broken-burst">💥</span></div>
+        <div class="broken-title">🐭 招かれざる客！</div>
+        <p class="broken-text">あなたの薬瓶「${names.join("」「")}」が<b>破壊</b>され、<br>中の生薬は<b>あなたの捨て札</b>に移りました。<br><span class="broken-sub">（「大収穫」で山札に戻して立て直せます）</span></p>
+        <button id="broken-ok" class="primary-btn">確認</button>
+      </div>`;
+    $("#app").appendChild(overlay);
+    document.getElementById("broken-ok").addEventListener("click", () => overlay.remove());
+  }
+  // 手番開始の自動ドロー(+2)を「少し間を置いて」実行する（配り/切替のあと引く感じを出す）。
+  // 決定論モード（KAMPO_DECK/KAMPO_ACTIONS指定時）は遅延なしで即引く（テスト用）。
+  let drawTimer = null;
+  function scheduleStartDraw() {
+    if (drawTimer) { clearTimeout(drawTimer); drawTimer = null; }
+    const doDraw = () => {
+      drawTimer = null;
+      if (!state || state.finished || !state.currentSymptom) return;
+      state.justDrawn = drawTo(Math.min(CONFIG.handHard, state.hand.length + CONFIG.drawPerTurn));
+      render();
+    };
+    const delay = (window.KAMPO_DECK || window.KAMPO_ACTIONS) ? 0 : (CONFIG.turnDrawDelayMs || 0);
+    if (delay > 0) drawTimer = setTimeout(doDraw, delay);
+    else doDraw();
+  }
+
   // 現在の盤を退避して、目隠し画面を挟み、next の手番を始める
   function handoffTo(next) {
     saveBoard(state.active);
     showHandoff(next);
   }
-  // 対戦の現在得点（アクティブは live の state.score、相手は保存済み）
+  // 対戦の現在得点・薬瓶数・手札数（アクティブは live、相手は保存済みの盤から）
   const scoreOf = (i) => (i === state.active ? state.score : (state.players ? state.players[i].score : 0));
+  const shelfCountOf = (i) => (i === state.active ? state.shelf.length : state.players[i].shelf.length);
+  const handCountOf = (i) => (i === state.active ? state.hand.length : state.players[i].hand.length);
 
   // ---- スタート画面（テーマ選択）---------------------------------
   function getCheckedThemes() {
@@ -250,12 +299,12 @@
     if (ids.length === 0) { el.textContent = ""; return; }
     const sel = themeSelection(ids);
     const herbTotal = sel.herbIds.reduce((sum, id) => sum + herbCountOf(id), 0);
-    const aux = deckPrefs.harvest + deckPrefs.daishukaku;
-    el.textContent = `デッキ合計 ${herbTotal + aux} 枚（生薬 ${herbTotal} ＋ 補助 ${aux}）`;
+    const aux = deckPrefs.harvest + deckPrefs.daishukaku + (deckPrefs.jama || 0);
+    el.textContent = `デッキ合計 ${herbTotal + aux} 枚（生薬 ${herbTotal} ＋ 補助・お邪魔 ${aux}）`;
   }
 
-  // デッキ編集UIのHTML（スタート画面・対戦の準備画面で共用）
-  function deckEditorHTML() {
+  // デッキ編集UIのHTML（スタート画面・対戦の準備画面で共用）。showJama=trueで対戦専用のお邪魔カードも編集可
+  function deckEditorHTML(showJama) {
     return `
         <div class="deck-editor">
           <div class="deck-editor-title">デッキ編集</div>
@@ -277,6 +326,16 @@
               <button type="button" class="de-step" data-card="daishukaku" data-delta="1">＋</button>
             </span>
           </div>
+          ${showJama ? `
+          <div class="de-section-title">お邪魔カード（対戦専用）</div>
+          <div class="deck-editor-row">
+            <span class="de-name"><span class="de-titleline">🐭 招かれざる客<span class="de-max">（最大${CONFIG.deckCardMax}枚）</span></span><span class="de-desc">ネズミが相手の薬瓶を1つ壊す（中身は相手の捨て札へ）</span></span>
+            <span class="de-stepper">
+              <button type="button" class="de-step" data-card="jama" data-delta="-1">−</button>
+              <b id="de-jama">${deckPrefs.jama || 0}</b>
+              <button type="button" class="de-step" data-card="jama" data-delta="1">＋</button>
+            </span>
+          </div>` : ""}
 
           <div class="de-section-title">生薬カード
             <span class="de-presets">
@@ -458,28 +517,36 @@
   function startVsSetup(themeIds) {
     selectedThemes = themeIds.slice();
     vsSetup = [{ name: "", prefs: null }, { name: "", prefs: null }];
-    deckPrefs = { harvest: CONFIG.harvestCardCopies, daishukaku: CONFIG.bigHarvestCardCopies, herbs: guaranteeCounts(themeIds) };
+    deckPrefs = vsDefaultPrefs(themeIds);
     showVsSetup(0);
   }
+  // 対戦の準備画面での初期デッキ（お邪魔カードも含む）
+  const vsDefaultPrefs = (themeIds) => ({
+    harvest: CONFIG.harvestCardCopies, daishukaku: CONFIG.bigHarvestCardCopies,
+    jama: CONFIG.jamaCardCopies, herbs: guaranteeCounts(themeIds),
+  });
   // クローン（各プレイヤーのデッキ編集を独立保存するため）
-  const clonePrefs = (p) => ({ harvest: p.harvest, daishukaku: p.daishukaku, herbs: { ...p.herbs } });
+  const clonePrefs = (p) => ({ harvest: p.harvest, daishukaku: p.daishukaku, jama: p.jama || 0, herbs: { ...p.herbs } });
 
   function showVsSetup(i) {
     const app = $("#app");
     const isLast = i === 1;
     app.innerHTML = `
       <div class="start-screen">
+        <button type="button" id="vs-back-btn" class="ghost-btn vs-back-btn">← テーマ選択へ戻る</button>
         <h1>対戦の準備<span class="edition-badge">プレイヤー${i + 1}</span></h1>
         <p class="mode-note">名前を入れて、あなたのデッキを編集してください（相手には見えません）。</p>
         <label class="vs-name-row">お名前：
           <input type="text" id="vs-name" class="vs-name-input" maxlength="12" placeholder="プレイヤー${i + 1}" value="${vsSetup[i].name}">
         </label>
-        ${deckEditorHTML()}
+        ${deckEditorHTML(true)}
         <p class="start-note" id="start-note"></p>
         <button id="vs-setup-btn" class="primary-btn">${isLast ? "対戦を始める" : "決定（プレイヤー2の準備へ）→"}</button>
       </div>
       <div id="toast" class="toast hidden"></div>`;
     wireDeckEditor(app);
+    // テーマを変えたくなったら、いつでもテーマ選択へ戻れる（対戦モード・選択テーマは保持）
+    $("#vs-back-btn").addEventListener("click", () => showStartScreen());
     $("#vs-setup-btn").addEventListener("click", () => {
       vsSetup[i].name = ($("#vs-name").value || "").trim() || `プレイヤー${i + 1}`;
       vsSetup[i].prefs = clonePrefs(deckPrefs);
@@ -487,7 +554,7 @@
         newGame(selectedThemes, "vs", vsSetup);
       } else {
         // プレイヤー2用に既定デッキへリセットして、目隠しで交代
-        deckPrefs = { harvest: CONFIG.harvestCardCopies, daishukaku: CONFIG.bigHarvestCardCopies, herbs: guaranteeCounts(selectedThemes) };
+        deckPrefs = vsDefaultPrefs(selectedThemes);
         showSetupHandoff(1);
       }
     });
@@ -617,10 +684,11 @@
     }
     state.currentSymptom = symptomById[state.symptomPile.pop()];
     if (state.mode === "vs") return; // 対戦：ドロー/手番は beginTurn 側で（呼び出し元が先手を決める）
-    // ソロ：ラウンド開始時、手札が初手枚数を下回っていたら補充（持ち越しは維持）
+    // ソロ：お題開始＝初手番。まず開幕を配り、少し間を置いて手番開始の+2
     state.roundTurn = 1;
-    state.drewThisTurn = false;
+    state.drewThisTurn = true;
     state.justDrawn = drawTo(Math.max(state.hand.length, CONFIG.handStart));
+    scheduleStartDraw();
   }
 
   // 対戦：目隠し（交代）画面。相手に手札を見られないよう、渡してから表示する
@@ -757,6 +825,32 @@
     render();
   }
 
+  // お邪魔カード（招かれざる客）：相手の薬瓶を1つランダムで壊す（中身の生薬は相手の捨て札へ）
+  function useJama(cardUid) {
+    if (state.finished || state.mode !== "vs") return;
+    const card = handByUid(cardUid);
+    if (!card || card.id !== "act:jama") return;
+    const opp = 1 - state.active;
+    const oppBoard = state.players[opp];
+    if (!oppBoard.shelf || oppBoard.shelf.length === 0) {
+      flash(`${state.playerNames[opp]} の薬瓶がありません。今は使えません。`, "warn");
+      return; // 対象がなければ消費しない（無駄打ち防止）
+    }
+    // ランダムで1つ選んで破壊
+    const idx = Math.floor(Math.random() * oppBoard.shelf.length);
+    const [bottle] = oppBoard.shelf.splice(idx, 1);
+    const f = formulaById[bottle.formulaId];
+    oppBoard.discard = oppBoard.discard.concat(bottle.herbs); // 中身は相手の捨て札へ（大収穫で復活可）
+    // 壊された薬瓶名を通知にためる（相手が手番を取ったとき、割れる演出で知らせる）
+    oppBoard.notice = (oppBoard.notice || []).concat(f ? f.name : "薬瓶");
+    // 使ったお邪魔カードは消費
+    state.hand = state.hand.filter(c => c.uid !== cardUid);
+    state.pot.hand = state.pot.hand.filter(u => u !== cardUid);
+    state.usedActions.push("act:jama");
+    flash(`🐭 招かれざる客！ ${state.playerNames[opp]} の薬瓶「${f ? f.name : "?"}」を壊した！`, "ok");
+    render();
+  }
+
   // ドロー：1手番に1回だけ2枚引く（手札は一時的に handHard まで持てる）
   // 収穫カードを使う：山札にある生薬を指名して手札に加えるモーダルを開く
   function openHarvestPicker(cardUid) {
@@ -827,26 +921,7 @@
     draw();
   }
 
-  function drawTurn() {
-    if (state.finished) return;
-    if (state.drewThisTurn) {
-      flash("引けるのは1手番に1回です。「ターンを終える」と次の手番で引けます。", "warn");
-      return;
-    }
-    if (state.hand.length >= CONFIG.handHard) {
-      flash("手札がいっぱいです。不要な生薬を捨ててから引いてください。", "warn");
-      return;
-    }
-    if (state.deck.length === 0) {
-      flash("山札が尽きました。今ある手札と薬瓶で組みましょう。", "warn");
-      return;
-    }
-    state.justDrawn = drawTo(Math.min(CONFIG.handHard, state.hand.length + CONFIG.drawPerTurn));
-    state.drewThisTurn = true;
-    render();
-  }
-
-  // ターンを終える：手番を1つ進める（対戦では相手に手番を譲る布石）
+  // ターンを終える：手番を1つ進める（対戦では相手に手番を譲る）。次の手番の開始で自動ドローされる。
   // 手札が「やわらかい上限(handSoft)」を超えていたら、まず自分で捨てさせる
   function endTurn() {
     if (state.finished) return;
@@ -855,10 +930,12 @@
       return;
     }
     state.roundTurn += 1;
-    state.drewThisTurn = false;
     state.pot = { hand: [], bottles: [] };
-    if (state.mode === "vs") { handoffTo(1 - state.active); return; } // 相手に手番を渡す
+    if (state.mode === "vs") { state.drewThisTurn = false; handoffTo(1 - state.active); return; } // 相手へ（相手の手番開始で自動ドロー）
+    // ソロ：手番を切り替えて表示 → 少し間を置いて+2ドロー
+    state.drewThisTurn = true;
     render();
+    scheduleStartDraw();
   }
 
   // 調合中の方剤を薬瓶に確保（棚へ）— お題をまたいで再利用できる
@@ -952,11 +1029,11 @@
 
   function actionCardHTML(card, drawIndex) {
     const a = ACTIONS[card.id];
-    const kind = card.id === "act:daishukaku" ? "action-big" : "action-harvest";
+    const kind = card.id === "act:daishukaku" ? "action-big" : card.id === "act:jama" ? "action-jama" : "action-harvest";
     const anim = drawIndex != null ? ` just-drawn" style="--dd:${drawIndex * 110}ms` : "";
     return `
       <div class="herb-card action-card ${kind}${anim}" data-uid="${card.uid}">
-        <div class="herb-top"><span class="action-badge">補助カード</span></div>
+        <div class="herb-top"><span class="action-badge">${card.id === "act:jama" ? "お邪魔カード" : "補助カード"}</span></div>
         <div class="herb-name">${a.name}</div>
         <div class="herb-kana">${a.kana}</div>
         <div class="herb-copy">${a.copy}</div>
@@ -1034,9 +1111,15 @@
 
       ${state.mode === "vs" ? `
       <section class="vs-bar">
-        <div class="vs-player ${state.active === 0 ? "active" : ""}"><span>${state.playerNames[0]}</span><b>${scoreOf(0)}</b></div>
+        <div class="vs-player ${state.active === 0 ? "active" : ""}">
+          <span class="vs-name">${state.playerNames[0]}</span><b class="vs-score">${scoreOf(0)}</b>
+          <span class="vs-sub">🫙${shelfCountOf(0)}・🂠${handCountOf(0)}</span>
+        </div>
         <div class="vs-turn">🎯 ${state.playerNames[state.active]} の番</div>
-        <div class="vs-player ${state.active === 1 ? "active" : ""}"><span>${state.playerNames[1]}</span><b>${scoreOf(1)}</b></div>
+        <div class="vs-player ${state.active === 1 ? "active" : ""}">
+          <span class="vs-name">${state.playerNames[1]}</span><b class="vs-score">${scoreOf(1)}</b>
+          <span class="vs-sub">🫙${shelfCountOf(1)}・🂠${handCountOf(1)}</span>
+        </div>
       </section>` : ""}
 
       <section class="symptom-card">
@@ -1089,13 +1172,9 @@
           </div>
           <span class="pile-label">捨て札</span>
         </div>
-        <button id="draw-btn" class="ghost-btn"
-          ${state.drewThisTurn || state.hand.length >= CONFIG.handHard || state.deck.length === 0 ? "disabled" : ""}>
-          ＋2枚引く${state.drewThisTurn ? "（この手番は引きました）" : "（1手番に1回）"}
-        </button>
         <button id="end-turn-btn" class="accent-btn"
           ${state.hand.length > CONFIG.handSoft ? "disabled" : ""}>
-          ターンを終える（次の手番へ・早解き -1）
+          ターンを終える（次の手番へ・自動で+2枚・早解き -1）
         </button>
         <button id="pass-btn" class="ghost-btn danger">${state.mode === "vs" ? "このお題を流す（両者0点で次へ）" : "このお題を見送る（0点）"}</button>
       </section>
@@ -1112,6 +1191,8 @@
       <div id="toast" class="toast hidden"></div>
     `;
 
+    // 引いたカードが横スクロールの右に隠れないよう、手札を右端へ寄せる
+    if (justDrew) { const hg = $(".hand-grid"); if (hg) hg.scrollLeft = hg.scrollWidth; }
     // 登場アニメは一度きり：この後の再描画（カード選択など）で再生されないようクリア
     state.justDrawn = [];
 
@@ -1131,6 +1212,7 @@
         if (!card) return;
         if (card.id === "act:harvest") openHarvestPicker(uid);
         else if (card.id === "act:daishukaku") useBigHarvest(uid);
+        else if (card.id === "act:jama") useJama(uid);
       });
     });
     app.querySelectorAll("[data-discard]").forEach(btn => {
@@ -1145,7 +1227,6 @@
     $("#submit-btn").addEventListener("click", submitPot);
     $("#bottle-btn").addEventListener("click", bottlePot);
     $("#clear-btn").addEventListener("click", () => { state.pot = { hand: [], bottles: [] }; render(); });
-    $("#draw-btn").addEventListener("click", drawTurn);
     { const dp = $("#discard-pile"); if (dp) dp.addEventListener("click", openDiscardView); }
     $("#end-turn-btn").addEventListener("click", endTurn);
     $("#pass-btn").addEventListener("click", passRound);
