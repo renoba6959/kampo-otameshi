@@ -29,9 +29,16 @@
     harvestCardCopies: 3, // デッキに入れる「収穫カード」の既定枚数（デッキ編集の初期値）
     bigHarvestCardCopies: 2, // デッキに入れる「大収穫カード」の既定枚数（デッキ編集の初期値）
     jamaCardCopies: 1,       // 対戦：デッキに入れる「お邪魔カード（招かれざる客）」の既定枚数
+    visitorCost: 2,          // 「静かなる来訪者」を使うときに支払う得点（説明文に出すので お試し版にも残る）
     turnDrawDelayMs: 1200,   // 手番開始の自動ドロー(+2)を、配り/切替の少しあとに出す間（ms）
     deckCardMax: 3,     // デッキ編集で補助カードを入れられる上限（各種類）
     herbMax: 9,         // デッキ編集で生薬を入れられる上限（各種類。0にすると外せる）
+    // この版では使えない補助カード（デッキ編集のキー名で指定。例：["visitor"]）。
+    //   お試し版用。名前と説明は出るが 0枚固定で増やせない＝「そういうカードがあるんだ」だけ伝える“皮”。
+    //   ※皮だけにする本体は、ビルド時に処理コードを丸ごと物理削除すること（build/build-trial.js 参照）。
+    //     この設定を書き換えても、お試し版には処理そのものが無いので動かない。
+    lockedCards: [],
+    lockedNote: "この版では利用できません", // ロックしたカードの説明文の末尾に足す一言
     editionLabel: "",   // 版の表示ラベル（例：お試し版）。空なら非表示。KAMPO_CONFIGで上書き
     requireConsent: false, // 起動時に免責への同意ゲートを出す（公開版=true）。KAMPO_CONFIGで上書き
   };
@@ -52,6 +59,10 @@
     "act:jama": {
       name: "招かれざる客", kana: "まねかれざるきゃく",
       copy: "相手の薬瓶を1つ壊す",
+    },
+    "act:visitor": {
+      name: "静かなる来訪者", kana: "しずかなるらいほうしゃ",
+      copy: "2点を払ってお邪魔カードを1回防ぐ",
     },
   };
   const isAction = (id) => typeof id === "string" && id.startsWith("act:");
@@ -169,7 +180,7 @@
       deck: [], discard: [], hand: [], shelf: [],
       pot: { hand: [], bottles: [] },
       roundTurn: 1, drewThisTurn: false, score: 0, log: [],
-      justDrawn: [], usedActions: [], roundOf: 0,
+      justDrawn: [], usedActions: [], roundOf: 0, guard: 0,
       // --- 対戦メタ ---
       active: 0,
       players: null,       // 対戦：[盤スナップショット0, 盤スナップショット1]
@@ -193,12 +204,12 @@
 
   // ---- 対戦：盤（プレイヤーの持ち物）を入れ替える仕組み ----------------
   // アクティブ盤は state の下記フィールドに入る。手番交代で退避／復元する。
-  const BOARD_FIELDS = ["deck", "discard", "hand", "shelf", "roundTurn", "drewThisTurn", "score", "log", "usedActions", "roundOf"];
+  const BOARD_FIELDS = ["deck", "discard", "hand", "shelf", "roundTurn", "drewThisTurn", "score", "log", "usedActions", "roundOf", "guard"];
   function makeBoard(sel, prefs) {
     return {
       deck: shuffle(buildDeck(sel.herbIds, prefs)),
       discard: [], hand: [], shelf: [],
-      roundTurn: 1, drewThisTurn: false, score: 0, log: [], usedActions: [], roundOf: 0,
+      roundTurn: 1, drewThisTurn: false, score: 0, log: [], usedActions: [], roundOf: 0, guard: 0,
     };
   }
   function saveBoard(i) { const b = state.players[i]; for (const f of BOARD_FIELDS) b[f] = state[f]; }
@@ -213,13 +224,15 @@
   // プレイヤー i の手番を始める。初手番は開幕の手札を配り、2回目以降は自動で+2枚ドロー。
   function beginTurn(i) {
     loadBoard(i);
+    let dealt = [];
     if (state.roundOf !== state.round) { // このお題に初めて着手＝初手番。まず開幕を配る
       state.roundOf = state.round;
       state.roundTurn = 1;
-      state.justDrawn = drawTo(Math.max(state.hand.length, CONFIG.handStart));
+      dealt = drawTo(Math.max(state.hand.length, CONFIG.handStart));
+      state.justDrawn = dealt;
     }
     state.drewThisTurn = true;
-    scheduleStartDraw(); // 少し間を置いて手番開始の+2（決定論モードは即時）
+    scheduleStartDraw(dealt); // 少し間を置いて手番開始の+2（決定論モードは即時）。配りの収穫も演出の対象
     // お邪魔カードで薬瓶を壊されていたら、手番開始時に「割れる演出」で知らせる
     // body 直下に出すので、この後の自動ドローの render が走っても消えない（確認を押すまで残る）
     if (state.players[i].notice && state.players[i].notice.length) {
@@ -268,15 +281,18 @@
   // 手番開始の自動ドロー(+2)を「少し間を置いて」実行する（配り/切替のあと引く感じを出す）。
   // 決定論モード（KAMPO_DECK/KAMPO_ACTIONS指定時）は遅延なしで即引く（テスト用）。
   let drawTimer = null;
-  function scheduleStartDraw() {
+  // dealt: お題開始の「開幕の配り」で来たカード。ここで来た収穫にも演出を出す（出さないと
+  // 「お題の1枚目だけ無言」になる）。+2 とまとめて一度だけ出すので、演出は二重にならない。
+  function scheduleStartDraw(dealt) {
     if (drawTimer) { clearTimeout(drawTimer); drawTimer = null; }
+    const dealtUids = dealt ? dealt.slice() : [];
     const doDraw = () => {
       drawTimer = null;
       if (!state || state.finished || !state.currentSymptom) return;
       const added = drawTo(Math.min(CONFIG.handHard, state.hand.length + CONFIG.drawPerTurn));
       state.justDrawn = added;
       render(); // render の最後で state.justDrawn は空にされるので、控えの added を使う
-      harvestFlash(added); // 収穫カードを引き当てたらイラストをふわっと表示
+      harvestFlash(dealtUids.concat(added)); // 配り＋今引いた2枚に収穫があればイラストをふわっと表示
     };
     const delay = (window.KAMPO_DECK || window.KAMPO_ACTIONS) ? 0 : (CONFIG.turnDrawDelayMs || 0);
     if (delay > 0) drawTimer = setTimeout(doDraw, delay);
@@ -324,9 +340,14 @@
     if (ids.length === 0) { el.textContent = ""; return; }
     const sel = themeSelection(ids);
     const herbTotal = sel.herbIds.reduce((sum, id) => sum + herbCountOf(id), 0);
-    const aux = deckPrefs.harvest + deckPrefs.daishukaku + (deckPrefs.jama || 0);
+    const aux = deckPrefs.harvest + deckPrefs.daishukaku + (deckPrefs.jama || 0) + (deckPrefs.visitor || 0);
     el.textContent = `デッキ合計 ${herbTotal + aux} 枚（生薬 ${herbTotal} ＋ 補助・お邪魔 ${aux}）`;
   }
+
+  // この版で使えないカードか（お試し版など）。ロック時は 0枚固定＝デッキに入れられない
+  const isLocked = (card) => (CONFIG.lockedCards || []).includes(card);
+  // ロックされたカードの説明文の末尾に足す注記（例：「／お試し版では利用できません」）
+  const lockedSuffix = (card) => isLocked(card) ? `<span class="de-locked-note">（${CONFIG.lockedNote}）</span>` : "";
 
   // デッキ編集UIのHTML（スタート画面・対戦の準備画面で共用）。showJama=trueで対戦専用のお邪魔カードも編集可
   function deckEditorHTML(showJama) {
@@ -351,6 +372,16 @@
               <button type="button" class="de-step" data-card="daishukaku" data-delta="1">＋</button>
             </span>
           </div>
+          ${showJama ? `
+          <div class="deck-editor-row${isLocked("visitor") ? " de-locked" : ""}">
+            <span class="de-name"><span class="de-titleline">🐈 静かなる来訪者<span class="de-max">（${isLocked("visitor") ? "対戦専用" : `対戦専用・最大${CONFIG.deckCardMax}枚`}）</span></span><span class="de-desc">${CONFIG.visitorCost}点を払ってお邪魔カードを1回防ぐ${lockedSuffix("visitor")}</span></span>
+            <span class="de-stepper">
+              <button type="button" class="de-step" data-card="visitor" data-delta="-1"${isLocked("visitor") ? " disabled" : ""}>−</button>
+              <b id="de-visitor">${isLocked("visitor") ? 0 : (deckPrefs.visitor || 0)}</b>
+              <button type="button" class="de-step" data-card="visitor" data-delta="1"${isLocked("visitor") ? " disabled" : ""}>＋</button>
+            </span>
+          </div>` : ""}
+
           ${showJama ? `
           <div class="de-section-title">お邪魔カード（対戦専用）</div>
           <div class="deck-editor-row">
@@ -378,6 +409,7 @@
   function wireDeckEditor(root) {
     root.querySelectorAll(".de-step").forEach(b => b.addEventListener("click", () => {
       const card = b.dataset.card;
+      if (isLocked(card)) return; // この版で使えないカードは増減させない（0枚固定）
       const next = deckPrefs[card] + Number(b.dataset.delta);
       deckPrefs[card] = Math.max(0, Math.min(CONFIG.deckCardMax, next));
       const el = document.querySelector("#de-" + card);
@@ -548,10 +580,11 @@
   // 対戦の準備画面での初期デッキ（お邪魔カードも含む）
   const vsDefaultPrefs = (themeIds) => ({
     harvest: CONFIG.harvestCardCopies, daishukaku: CONFIG.bigHarvestCardCopies,
-    jama: CONFIG.jamaCardCopies, herbs: guaranteeCounts(themeIds),
+    jama: CONFIG.jamaCardCopies,
+    herbs: guaranteeCounts(themeIds),
   });
   // クローン（各プレイヤーのデッキ編集を独立保存するため）
-  const clonePrefs = (p) => ({ harvest: p.harvest, daishukaku: p.daishukaku, jama: p.jama || 0, herbs: { ...p.herbs } });
+  const clonePrefs = (p) => ({ harvest: p.harvest, daishukaku: p.daishukaku, jama: p.jama || 0, visitor: p.visitor || 0, herbs: { ...p.herbs } });
 
   function showVsSetup(i) {
     const app = $("#app");
@@ -712,8 +745,9 @@
     // ソロ：お題開始＝初手番。まず開幕を配り、少し間を置いて手番開始の+2
     state.roundTurn = 1;
     state.drewThisTurn = true;
-    state.justDrawn = drawTo(Math.max(state.hand.length, CONFIG.handStart));
-    scheduleStartDraw();
+    const dealt = drawTo(Math.max(state.hand.length, CONFIG.handStart));
+    state.justDrawn = dealt;
+    scheduleStartDraw(dealt); // 配りで来た収穫も演出の対象にする
   }
 
   // 対戦：目隠し（交代）画面。相手に手札を見られないよう、渡してから表示する
@@ -875,6 +909,7 @@
     flash(`🐭 招かれざる客！ ${state.playerNames[opp]} の薬瓶「${f ? f.name : "?"}」を壊した！`, "ok");
     render();
   }
+
 
   // ドロー：1手番に1回だけ2枚引く（手札は一時的に handHard まで持てる）
   // 収穫カードを使う：山札にある生薬を指名して手札に加えるモーダルを開く
@@ -1054,11 +1089,14 @@
 
   function actionCardHTML(card, drawIndex) {
     const a = ACTIONS[card.id];
-    const kind = card.id === "act:daishukaku" ? "action-big" : card.id === "act:jama" ? "action-jama" : "action-harvest";
+    const kind = card.id === "act:daishukaku" ? "action-big"
+      : card.id === "act:jama" ? "action-jama"
+      : "action-harvest";
     const anim = drawIndex != null ? ` just-drawn" style="--dd:${drawIndex * 110}ms` : "";
+    const badge = card.id === "act:jama" ? "お邪魔カード" : "補助カード";
     return `
       <div class="herb-card action-card ${kind}${anim}" data-uid="${card.uid}">
-        <div class="herb-top"><span class="action-badge">${card.id === "act:jama" ? "お邪魔カード" : "補助カード"}</span></div>
+        <div class="herb-top"><span class="action-badge">${badge}</span></div>
         <div class="herb-name">${a.name}</div>
         <div class="herb-kana">${a.kana}</div>
         <div class="herb-copy">${a.copy}</div>

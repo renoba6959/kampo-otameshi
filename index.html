@@ -5,12 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>学んで効く！漢方カードバトル（お試し版）</title>
   <link rel="stylesheet" href="style.css">
+  <!-- 演出用イラストの先読み。演出は1.9秒で消えるため、その場で読み込むと1回目に間に合わない -->
+  <link rel="preload" as="image" href="harvest.png">
+  <link rel="preload" as="image" href="jama.png">
+  <link rel="preload" as="image" href="card-back.png">
 </head>
 <body>
   <main id="app"><!-- ゲーム画面はJSで描画されます --></main>
 
   <!-- データ → ゲーム本体の順で読み込み（file:// でも動作） -->
-    <script>window.KAMPO_CONFIG = {"harvestCardCopies":1,"bigHarvestCardCopies":1,"deckCardMax":1,"editionLabel":"お試し版","requireConsent":true};</script>
+    <script>window.KAMPO_CONFIG = {"harvestCardCopies":1,"bigHarvestCardCopies":1,"deckCardMax":1,"lockedCards":["visitor"],"lockedNote":"お試し版では利用できません","editionLabel":"お試し版","requireConsent":true};</script>
   <script src="data.js"></script>
   <script src="game.js"></script>
 </body>
