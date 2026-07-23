@@ -13,6 +13,7 @@
   "use strict";
 
   const { herbs, formulas, symptoms, themes } = window.KAMPO;
+  const byoi = window.KAMPO.byoi || [];   // かぜの中の病位サブ分類（無いビルドでも動くよう既定 []）
 
   // ---- 設定 -------------------------------------------------------
   const CONFIG = {
@@ -102,7 +103,8 @@
   // 選んだテーマ集合から、使う方剤・症状・生薬を導く
   function themeSelection(themeIds) {
     const set = new Set(themeIds);
-    const activeFormulas = formulas.filter(f => set.has(f.theme));
+    // 選んだトークンは「テーマid」でも「病位id」でもよい。どちらかに一致した方剤を集める。
+    const activeFormulas = formulas.filter(f => set.has(f.theme) || (f.byoi && set.has(f.byoi)));
     const activeFormulaIds = new Set(activeFormulas.map(f => f.id));
     // 症状は「正解の方剤」がテーマに含まれるものだけ
     const activeSymptoms = symptoms.filter(s => activeFormulaIds.has(primaryFormulaId(s)));
@@ -494,6 +496,7 @@
     app.innerHTML = `
       <div class="start-screen">
         <h1>学んで効く！<span>漢方カードバトル</span>${CONFIG.editionLabel ? `<span class="edition-badge">${CONFIG.editionLabel}</span>` : ""}</h1>
+        <button type="button" id="zukan-btn" class="ghost-btn zukan-btn">📖 収録図鑑（生薬・方剤の一覧）</button>
         <div class="mode-select">
           <button type="button" class="mode-btn ${selectedMode === "solo" ? "selected" : ""}" data-mode="solo">🧑 ソロ</button>
           <button type="button" class="mode-btn ${selectedMode === "vs" ? "selected" : ""}" data-mode="vs">🧑‍🤝‍🧑 2人対戦</button>
@@ -507,6 +510,7 @@
         <div class="theme-list">
           ${themes.map(t => {
             const n = formulas.filter(f => f.theme === t.id).length;
+            const subs = byoi.filter(b => b.theme === t.id);   // このテーマの病位サブ分類
             return `
               <label class="theme-item">
                 <input type="checkbox" class="theme-check" value="${t.id}" ${selectedThemes.includes(t.id) ? "checked" : ""}>
@@ -515,7 +519,22 @@
                   <span class="theme-desc">${t.desc}</span>
                 </span>
                 <button type="button" class="detail-btn" data-detail="${t.id}">詳細</button>
-              </label>`;
+              </label>
+              ${subs.length ? `<div class="byoi-list">
+                <p class="byoi-lead">▸ 病位でしぼる（1つだけ選ぶとデッキが小さく＝方剤を組みやすい。上の「${t.name.replace(/（.*/, "")}」を選べば全部）</p>
+                ${subs.map(b => {
+                  const bn = formulas.filter(f => f.byoi === b.id).length;
+                  return `
+                    <label class="theme-item byoi-item">
+                      <input type="checkbox" class="theme-check" value="${b.id}" ${selectedThemes.includes(b.id) ? "checked" : ""}>
+                      <span class="theme-body">
+                        <span class="theme-name">${b.name} <span class="theme-count">${bn}方剤</span></span>
+                        <span class="theme-desc">${b.desc}</span>
+                      </span>
+                      <button type="button" class="detail-btn" data-detail="${b.id}">詳細</button>
+                    </label>`;
+                }).join("")}
+              </div>` : ""}`;
           }).join("")}
         </div>
         ${selectedMode === "solo" ? deckEditorHTML() : `
@@ -540,7 +559,7 @@
       }
       const sel = themeSelection(ids);
       const rounds = Math.min(sel.activeSymptoms.length, CONFIG.maxRounds);
-      note.textContent = `お題 ${rounds} 問／デッキに入る生薬 ${sel.herbIds.length} 種（全27種中）`;
+      note.textContent = `お題 ${rounds} 問／デッキに入る生薬 ${sel.herbIds.length} 種（全${herbs.length}種中）`;
       btn.disabled = false;
       // テーマが変わったら「おまかせ（最低保証）」を既定でロード（手動編集はリセット）
       deckPrefs.herbs = guaranteeCounts(ids);
@@ -552,6 +571,8 @@
       selectedMode = b.dataset.mode === "vs" ? "vs" : "solo";
       showStartScreen();                            // 再描画（対戦はデッキ編集を隠す）
     }));
+    const zukanBtn = $("#zukan-btn");
+    if (zukanBtn) zukanBtn.addEventListener("click", openZukan);
     app.querySelectorAll(".theme-check").forEach(el => el.addEventListener("change", refresh));
     app.querySelectorAll("[data-detail]").forEach(b => b.addEventListener("click", (e) => {
       e.preventDefault();   // ラベル内のボタンなのでチェックのトグルを止める
@@ -635,17 +656,94 @@
   }
 
   // テーマの「詳細」：そのテーマの方剤一覧（構成生薬つき）をモーダル表示
+  // 収録図鑑：いま window.KAMPO に入っている生薬・方剤をすべて一覧する。
+  //   お試し版では KAMPO 自体が絞り込まれているので、自動的に収録分だけが並ぶ（漏れない）。
+  function openZukan() {
+    const themeShortOf = id => ((themes.find(t => t.id === id) || {}).name || id).replace(/（.*/, "");
+    const byoiNameOf  = id => (byoi.find(b => b.id === id) || {}).name || "";
+    const asked = new Set(symptoms.map(primaryFormulaId));   // お題として問われる方剤
+
+    // 並び替え用の比較関数
+    const kanaCmp = (a, b) => a.kana.localeCompare(b.kana, "ja");   // あいうえお順（読み仮名）
+    const noCmp = (a, b) => {                                        // 番号順（ツムラ番号。番号なしは末尾）
+      if (a.no == null && b.no == null) return kanaCmp(a, b);
+      if (a.no == null) return 1;
+      if (b.no == null) return -1;
+      return a.no - b.no;
+    };
+
+    // 方剤カード（テーマの小ラベル・番号・病位つき）
+    const formulaCard = f => `
+      <div class="detail-formula">
+        <div class="detail-fhead">
+          <span class="detail-fname">${f.name}<span class="detail-fkana">${f.kana}</span></span>
+          <span class="detail-tag ${asked.has(f.id) ? "tag-asked" : "tag-base"}">${asked.has(f.id) ? "出題" : "土台"}</span>
+        </div>
+        <div class="zk-fmeta">${f.no ? `<span class="zk-no">${f.no}番</span>` : ""}<span class="zk-theme">${themeShortOf(f.theme)}</span>${f.byoi && byoiNameOf(f.byoi) ? `<span class="zk-byoi">${byoiNameOf(f.byoi)}</span>` : ""}</div>
+        <div class="detail-herbs">${f.herbs.map(id => herbById[id].name).join("・")}<span class="detail-count">（${f.herbs.length}味）</span></div>
+        ${f.note ? `<div class="zk-note">${f.note}</div>` : ""}
+      </div>`;
+    const renderFormulas = mode =>
+      formulas.slice().sort(mode === "no" ? noCmp : kanaCmp).map(formulaCard).join("");
+
+    // 生薬：あいうえお順のカードグリッド（寒熱で色分け）
+    const herbCard = h => `
+      <div class="zk-herb ${netsuClass[h.netsu]}">
+        <div class="zk-hhead"><span class="zk-hname">${h.name}</span><span class="zk-hkana">${h.kana}</span></div>
+        <div class="zk-hmeta"><span class="zk-netsu">${h.netsu}</span><span class="zk-kbs">${h.kbs.join("・")}</span></div>
+        <div class="zk-hcopy">${h.copy}</div>
+      </div>`;
+    const herbSection = herbs.slice().sort(kanaCmp).map(herbCard).join("");
+
+    const overlay = document.createElement("div");
+    overlay.className = "overlay";
+    overlay.innerHTML = `
+      <div class="detail-modal zukan-modal">
+        <div class="detail-title">📖 収録図鑑<span>方剤 ${formulas.length}／生薬 ${herbs.length}</span></div>
+        <p class="detail-lead">いまこのゲームに入っている方剤・生薬の一覧です。「出題」＝お題として問われる方剤／「土台」＝積み上げに使う方剤。寒熱は 温=赤・寒=青・平=黄。</p>
+        <div class="zk-tabs">
+          <button type="button" class="zk-tab selected" data-tab="formula">方剤 ${formulas.length}</button>
+          <button type="button" class="zk-tab" data-tab="herb">生薬 ${herbs.length}</button>
+        </div>
+        <div class="zk-panel" data-panel="formula">
+          <div class="zk-sort">
+            <span class="zk-sort-label">並び順</span>
+            <button type="button" class="zk-sort-btn selected" data-sort="kana">あいうえお順</button>
+            <button type="button" class="zk-sort-btn" data-sort="no">番号順</button>
+          </div>
+          <div class="detail-list" id="zk-formula-list">${renderFormulas("kana")}</div>
+        </div>
+        <div class="zk-panel zk-hidden" data-panel="herb">
+          <div class="zk-herb-grid">${herbSection}</div>
+        </div>
+        <button type="button" class="primary-btn detail-close">閉じる</button>
+      </div>`;
+    $("#app").appendChild(overlay);
+    overlay.querySelectorAll(".zk-tab").forEach(tab => tab.addEventListener("click", () => {
+      overlay.querySelectorAll(".zk-tab").forEach(x => x.classList.toggle("selected", x === tab));
+      overlay.querySelectorAll(".zk-panel").forEach(p => p.classList.toggle("zk-hidden", p.dataset.panel !== tab.dataset.tab));
+    }));
+    overlay.querySelectorAll(".zk-sort-btn").forEach(btn => btn.addEventListener("click", () => {
+      overlay.querySelectorAll(".zk-sort-btn").forEach(x => x.classList.toggle("selected", x === btn));
+      overlay.querySelector("#zk-formula-list").innerHTML = renderFormulas(btn.dataset.sort);
+    }));
+    overlay.querySelector(".detail-close").addEventListener("click", () => overlay.remove());
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+  }
+
   function openThemeDetail(themeId) {
-    const theme = themes.find(t => t.id === themeId);
+    const theme = themes.find(t => t.id === themeId) || byoi.find(b => b.id === themeId);
     if (!theme) return;
-    // このテーマで「お題として問われる」方剤id（症状の正解がこのテーマの方剤）
+    // themeId はテーマid（そのテーマ全方剤）でも病位id（その病位の方剤）でもよい
+    const inGroup = f => f.theme === themeId || f.byoi === themeId;
+    // このグループで「お題として問われる」方剤id（症状の正解がこのグループの方剤）
     const asked = new Set(
       symptoms.map(primaryFormulaId)
-        .filter(id => formulaById[id] && formulaById[id].theme === themeId)
+        .filter(id => formulaById[id] && inGroup(formulaById[id]))
     );
     // 味数の少ない順（土台→大きな方剤へ育つ流れが見える）
     const list = formulas
-      .filter(f => f.theme === themeId)
+      .filter(inGroup)
       .sort((a, b) => a.herbs.length - b.herbs.length);
 
     const overlay = document.createElement("div");

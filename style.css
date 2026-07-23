@@ -608,6 +608,11 @@ body::before {
 .theme-name { font-size: 17px; font-weight: 700; color: var(--ink); }
 .theme-count { font-size: 12px; font-weight: 400; color: var(--accent-2); margin-left: 6px; }
 .theme-desc { font-size: 13px; color: var(--ink-soft); }
+/* かぜの中の病位サブ選択（入れ子） */
+.byoi-list { margin: -2px 0 2px 22px; display: flex; flex-direction: column; gap: 8px; }
+.byoi-lead { font-size: 12px; color: var(--accent-2); margin: 4px 0 2px; line-height: 1.4; }
+.byoi-item { padding: 10px 14px; background: linear-gradient(180deg, #fffdf6, var(--paper-2)); }
+.byoi-item .theme-name { font-size: 15px; }
 .detail-btn {
   align-self: center; flex: none; font-size: 13px; color: var(--accent-2);
   background: #fff; border: 1px solid var(--line); border-radius: 8px;
@@ -691,3 +696,47 @@ body::before {
 .detail-herbs { font-size: 13px; color: var(--ink); margin-top: 5px; line-height: 1.5; }
 .detail-count { font-size: 11px; color: var(--ink-soft); }
 .detail-close { margin-top: 16px; width: 100%; }
+
+/* ---- 収録図鑑 ---- */
+.zukan-btn { display: inline-block; margin: 0 auto 14px; }
+.zukan-modal { max-width: 620px; }
+.zk-tabs { display: flex; gap: 8px; margin: 4px 0 14px; }
+.zk-tab {
+  flex: 1; font-size: 14px; font-weight: 700; color: var(--ink-soft);
+  background: #fff; border: 1px solid var(--line); border-radius: 999px;
+  padding: 8px 0; cursor: pointer;
+}
+.zk-tab.selected { color: #fff; background: var(--accent); border-color: var(--accent); }
+.zk-panel.zk-hidden { display: none; }
+.zk-sort { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; }
+.zk-sort-label { font-size: 12px; color: var(--ink-soft); margin-right: 2px; }
+.zk-sort-btn {
+  font-size: 12px; font-weight: 700; color: var(--ink-soft);
+  background: #fff; border: 1px solid var(--line); border-radius: 999px;
+  padding: 4px 12px; cursor: pointer;
+}
+.zk-sort-btn.selected { color: #fff; background: var(--accent-2); border-color: var(--accent-2); }
+.zk-fmeta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
+.zk-theme { font-size: 11px; font-weight: 700; color: var(--ink-soft); background: #eee7d8; border-radius: 6px; padding: 1px 8px; }
+.zk-no { font-size: 11px; font-weight: 700; color: var(--accent-2); background: #f0f5f0; border-radius: 6px; padding: 1px 8px; }
+.zk-byoi { font-size: 11px; font-weight: 700; color: var(--accent); background: #fbf1e6; border-radius: 6px; padding: 1px 8px; }
+.zk-note { font-size: 12px; color: var(--ink-soft); line-height: 1.5; margin-top: 6px; }
+/* 生薬グリッド */
+.zk-herb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.zk-herb {
+  border: 1px solid var(--line); border-top: 4px solid var(--neutral);
+  border-radius: 10px; padding: 8px 10px; background: #fff;
+}
+.zk-herb.netsu-warm    { border-top-color: var(--warm); }
+.zk-herb.netsu-cold    { border-top-color: var(--cold); }
+.zk-herb.netsu-neutral { border-top-color: var(--neutral); }
+.zk-hhead { display: flex; align-items: baseline; gap: 6px; }
+.zk-hname { font-size: 15px; font-weight: 800; color: var(--ink); }
+.zk-hkana { font-size: 10px; color: var(--ink-soft); }
+.zk-hmeta { display: flex; gap: 6px; margin: 4px 0; }
+.zk-netsu { font-size: 11px; font-weight: 700; color: #fff; background: var(--neutral); border-radius: 999px; padding: 1px 8px; }
+.netsu-warm .zk-netsu    { background: var(--warm); }
+.netsu-cold .zk-netsu    { background: var(--cold); }
+.netsu-neutral .zk-netsu { background: var(--neutral); }
+.zk-kbs { font-size: 11px; font-weight: 700; color: var(--accent-2); background: #f0f5f0; border-radius: 999px; padding: 1px 8px; }
+.zk-hcopy { font-size: 12px; color: var(--ink); line-height: 1.45; margin-top: 2px; }
