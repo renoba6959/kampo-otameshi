@@ -645,6 +645,22 @@ body::before {
 }
 .de-step:hover { border-color: var(--accent-2); background: #f0f5f0; }
 .de-note { font-size: 11px; color: var(--ink-soft); margin: 8px 0 0; }
+
+/* ---- お題の数（±で選ぶ／ソロ・対戦どちらでも表示） ---- */
+.rounds-editor {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin-top: 14px; padding: 12px 16px; text-align: left;
+  background: linear-gradient(180deg, #fff4e2, var(--paper-2));
+  border: 1px solid var(--gold); border-radius: 12px;
+}
+.rounds-name { display: flex; flex-direction: column; gap: 2px; }
+.rounds-title { font-size: 15px; font-weight: 800; color: var(--accent); }
+.rounds-desc { font-size: 11px; font-weight: 400; color: var(--ink-soft); line-height: 1.4; }
+.rounds-step {
+  width: 30px; height: 30px; border-radius: 8px; font-size: 18px; line-height: 1;
+  background: #fff; border: 1px solid var(--line); color: var(--accent-2); cursor: pointer;
+}
+.rounds-step:hover { border-color: var(--accent-2); background: #f0f5f0; }
 .de-section-title {
   display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;
   font-size: 13px; font-weight: 700; color: var(--accent-2);

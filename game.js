@@ -70,6 +70,9 @@
 
   // デッキ編集で選んだ枚数（スタート画面で調整）。herbs は { 生薬id: 枚数 }
   let deckPrefs = { harvest: CONFIG.harvestCardCopies, daishukaku: CONFIG.bigHarvestCardCopies, herbs: {} };
+  const ROUNDS_MIN = 3;                       // お題数の下限（±で選べる範囲。上限は CONFIG.maxRounds＝10）
+  const ROUNDS_DEFAULT = 5;                   // お題数の既定（少なめ＝方剤を組みやすい。プレイヤーは±で変更可）
+  let selectedRounds = ROUNDS_DEFAULT;        // 1ゲームのお題数（実際はテーマの症状数で頭打ち）
   // スタート画面で選んだモード： "solo"（1人）／ "vs"（同じ端末で2人交代）
   let selectedMode = "solo";
   // 選択中のテーマ（モード切替で再描画しても保持する）
@@ -172,7 +175,7 @@
       themeIds: themeIds.slice(),           // 今回選ばれたテーマ
       // --- 共有：お題まわり ---
       symptomPile: shuffle(sel.activeSymptoms.map(s => s.id)),
-      totalRounds: Math.min(sel.activeSymptoms.length, CONFIG.maxRounds),
+      totalRounds: Math.min(sel.activeSymptoms.length, selectedRounds),
       round: 0,            // 何ラウンド目か（1始まり表示・共有）
       currentSymptom: null,
       hintOpen: false,
@@ -321,6 +324,8 @@
   //   ＝ min（そのテーマでその生薬を含む“出題方剤”の数, そのゲームのお題数）
   function guaranteeCounts(ids) {
     const sel = themeSelection(ids);
+    // おまかせは「お題数スライダー」に左右されず、最大お題数(10)でも足りる枚数を常に確保する。
+    // （デッキはデッキ／お題数は消耗の度合いを変えるだけ、という分かりやすいモデルにする）
     const rounds = Math.min(sel.activeSymptoms.length, CONFIG.maxRounds);
     const counts = {};
     sel.herbIds.forEach(id => counts[id] = 0);
@@ -537,6 +542,14 @@
               </div>` : ""}`;
           }).join("")}
         </div>
+        <div class="rounds-editor">
+          <span class="rounds-name"><span class="rounds-title">🎯 お題の数</span><span class="rounds-desc">少ないほど方剤を組みやすく、増やすと手応えアップ（最大10）。</span></span>
+          <span class="de-stepper">
+            <button type="button" class="rounds-step" data-delta="-1">−</button>
+            <b id="rounds-val">${selectedRounds}</b>
+            <button type="button" class="rounds-step" data-delta="1">＋</button>
+          </span>
+        </div>
         ${selectedMode === "solo" ? deckEditorHTML() : `
         <p class="vs-setup-hint">対戦では、このあと<b>各プレイヤーが自分の名前とデッキ</b>を設定します（相手には見えません）。</p>`}
         <p class="start-note" id="start-note"></p>
@@ -546,23 +559,28 @@
       <div id="toast" class="toast hidden"></div>
     `;
 
-    const refresh = () => {
+    // お題数・生薬種類の案内文だけを更新（デッキ編集はいじらない）。テーマ変更とお題数変更の両方から呼ぶ。
+    const updateStartNote = () => {
       const ids = getCheckedThemes();
-      selectedThemes = ids;                 // 選択テーマを保持（モード切替の再描画で復元）
       const note = $("#start-note");
       const btn = $("#start-btn");
+      if (!note) return;
       if (ids.length === 0) {
         note.textContent = "テーマを1つ以上選んでください。";
-        btn.disabled = true;
-        renderDeckEditor();
+        if (btn) btn.disabled = true;
         return;
       }
       const sel = themeSelection(ids);
-      const rounds = Math.min(sel.activeSymptoms.length, CONFIG.maxRounds);
+      const rounds = Math.min(sel.activeSymptoms.length, selectedRounds);
       note.textContent = `お題 ${rounds} 問／デッキに入る生薬 ${sel.herbIds.length} 種（全${herbs.length}種中）`;
-      btn.disabled = false;
+      if (btn) btn.disabled = false;
+    };
+
+    const refresh = () => {
+      selectedThemes = getCheckedThemes();   // 選択テーマを保持（モード切替の再描画で復元）
+      updateStartNote();
       // テーマが変わったら「おまかせ（最低保証）」を既定でロード（手動編集はリセット）
-      deckPrefs.herbs = guaranteeCounts(ids);
+      if (selectedThemes.length > 0) deckPrefs.herbs = guaranteeCounts(selectedThemes);
       renderDeckEditor();
     };
 
@@ -573,6 +591,12 @@
     }));
     const zukanBtn = $("#zukan-btn");
     if (zukanBtn) zukanBtn.addEventListener("click", openZukan);
+    app.querySelectorAll(".rounds-step").forEach(b => b.addEventListener("click", () => {
+      const next = selectedRounds + Number(b.dataset.delta);
+      selectedRounds = Math.max(ROUNDS_MIN, Math.min(CONFIG.maxRounds, next));
+      const el = $("#rounds-val"); if (el) el.textContent = selectedRounds;
+      updateStartNote();   // お題数表示だけ更新（デッキは触らない）
+    }));
     app.querySelectorAll(".theme-check").forEach(el => el.addEventListener("change", refresh));
     app.querySelectorAll("[data-detail]").forEach(b => b.addEventListener("click", (e) => {
       e.preventDefault();   // ラベル内のボタンなのでチェックのトグルを止める
