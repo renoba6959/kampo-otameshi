@@ -539,7 +539,28 @@ body::before {
 }
 .mode-btn:hover { transform: translateY(-2px); }
 .mode-btn.selected { color: #fff; background: var(--accent); border-color: var(--accent); }
-.mode-note { font-size: 12px; color: var(--ink-soft); text-align: center; margin: 0 0 12px; }
+/* ソロ内のタブ（自習／CPUと対戦）。ソロを選んだときだけ出る派生タブ */
+.submode-tabs { display: flex; gap: 8px; justify-content: center; margin: 8px auto 4px; max-width: 412px; }
+.submode-tab {
+  flex: 1; padding: 9px 8px; font-size: 13px; font-weight: 700;
+  color: var(--accent-2); background: #fff; border: 1px solid var(--line);
+  border-radius: 999px; cursor: pointer;
+}
+.submode-tab:hover { border-color: var(--accent-2); }
+.submode-tab.selected { color: #fff; background: var(--accent-2); border-color: var(--accent-2); }
+/* CPUの強さ（やさしい／ふつう／つよい） */
+.cpu-level { max-width: 412px; margin: 4px auto 8px; text-align: center; }
+.cpu-level-title { display: block; font-size: 12px; font-weight: 700; color: var(--ink-soft); margin-bottom: 6px; }
+.cpu-level-btns { display: flex; gap: 6px; justify-content: center; }
+.cpu-level-btn {
+  flex: 1; padding: 8px 6px; font-size: 13px; font-weight: 700;
+  color: var(--accent); background: #fff; border: 1px solid var(--line);
+  border-radius: 999px; cursor: pointer;
+}
+.cpu-level-btn:hover { border-color: var(--accent); }
+.cpu-level-btn.selected { color: #fff; background: var(--accent); border-color: var(--accent); }
+.cpu-level-note { font-size: 12px; color: var(--ink-soft); margin: 6px 0 0; }
+.mode-note { font-size: 12px; color: var(--ink-soft); text-align: center; margin: 6px 0 12px; }
 .vs-setup-hint {
   font-size: 13px; color: var(--ink); text-align: center; line-height: 1.6;
   background: #eef4ee; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin: 4px 0;
@@ -563,6 +584,18 @@ body::before {
 .handoff-name { font-size: 22px; font-weight: 800; color: var(--accent); margin: 8px 0; }
 .handoff-note { font-size: 12px; color: var(--ink-soft); margin-bottom: 18px; }
 .handoff-modal .primary-btn { width: 100%; }
+
+/* CPUの番を覆う「考え中」カバー。
+   盤（CPUの手札）を確実に隠すため、ほぼ不透明にする。z-indexは通常のモーダル(.overlay=100)より
+   少しだけ低くして、CPUが提出した結果モーダルはこのカバーの上に出る（下のCPU手札は最後まで見えない）。 */
+#cpu-thinking { z-index: 90; background: rgba(32,28,22,.98); }
+.cpu-think {
+  background: #fffdf6; border-radius: 18px; padding: 30px 34px; text-align: center;
+  max-width: 360px; width: 100%; box-shadow: 0 12px 40px rgba(0,0,0,.4);
+}
+.cpu-think-face { font-size: 54px; animation: cpu-bob 1s ease-in-out infinite; }
+.cpu-think-text { font-size: 16px; font-weight: 700; color: var(--accent); margin-top: 8px; }
+@keyframes cpu-bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
 
 /* ---- 対戦バー（両者の得点・手番）---- */
 .vs-bar {
@@ -609,10 +642,10 @@ body::before {
 .theme-count { font-size: 12px; font-weight: 400; color: var(--accent-2); margin-left: 6px; }
 .theme-desc { font-size: 13px; color: var(--ink-soft); }
 /* かぜの中の病位サブ選択（入れ子） */
-.byoi-list { margin: -2px 0 2px 22px; display: flex; flex-direction: column; gap: 8px; }
-.byoi-lead { font-size: 12px; color: var(--accent-2); margin: 4px 0 2px; line-height: 1.4; }
-.byoi-item { padding: 10px 14px; background: linear-gradient(180deg, #fffdf6, var(--paper-2)); }
-.byoi-item .theme-name { font-size: 15px; }
+.subgroup-list { margin: -2px 0 2px 22px; display: flex; flex-direction: column; gap: 8px; }
+.subgroup-lead { font-size: 12px; color: var(--accent-2); margin: 4px 0 2px; line-height: 1.4; }
+.subgroup-item { padding: 10px 14px; background: linear-gradient(180deg, #fffdf6, var(--paper-2)); }
+.subgroup-item .theme-name { font-size: 15px; }
 .detail-btn {
   align-self: center; flex: none; font-size: 13px; color: var(--accent-2);
   background: #fff; border: 1px solid var(--line); border-radius: 8px;
@@ -714,7 +747,14 @@ body::before {
 .detail-close { margin-top: 16px; width: 100%; }
 
 /* ---- 収録図鑑 ---- */
-.zukan-btn { display: inline-block; margin: 0 auto 14px; }
+.zukan-btn { display: inline-block; }
+/* タイトルの「紹介動画」「収録図鑑」ボタンを横並び（狭い画面では折り返す） */
+.title-btns { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin: 0 auto 14px; }
+
+/* 紹介動画モーダル：16:9 の枠で YouTube を埋め込み（幅に応じて自動リサイズ） */
+.intro-modal { max-width: 720px; }
+.intro-video { position: relative; width: 100%; aspect-ratio: 16 / 9; margin: 4px 0 16px; background: #000; border-radius: 10px; overflow: hidden; }
+.intro-video iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
 .zukan-modal { max-width: 620px; }
 .zk-tabs { display: flex; gap: 8px; margin: 4px 0 14px; }
 .zk-tab {
@@ -735,7 +775,7 @@ body::before {
 .zk-fmeta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
 .zk-theme { font-size: 11px; font-weight: 700; color: var(--ink-soft); background: #eee7d8; border-radius: 6px; padding: 1px 8px; }
 .zk-no { font-size: 11px; font-weight: 700; color: var(--accent-2); background: #f0f5f0; border-radius: 6px; padding: 1px 8px; }
-.zk-byoi { font-size: 11px; font-weight: 700; color: var(--accent); background: #fbf1e6; border-radius: 6px; padding: 1px 8px; }
+.zk-subgroup { font-size: 11px; font-weight: 700; color: var(--accent); background: #fbf1e6; border-radius: 6px; padding: 1px 8px; }
 .zk-note { font-size: 12px; color: var(--ink-soft); line-height: 1.5; margin-top: 6px; }
 /* 生薬グリッド */
 .zk-herb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }

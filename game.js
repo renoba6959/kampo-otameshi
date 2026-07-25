@@ -13,7 +13,7 @@
   "use strict";
 
   const { herbs, formulas, symptoms, themes } = window.KAMPO;
-  const byoi = window.KAMPO.byoi || [];   // かぜの中の病位サブ分類（無いビルドでも動くよう既定 []）
+  const subgroups = window.KAMPO.subgroups || [];   // テーマ内の絞り込みグループ（無いビルドでも動くよう既定 []）
 
   // ---- 設定 -------------------------------------------------------
   const CONFIG = {
@@ -73,8 +73,14 @@
   const ROUNDS_MIN = 3;                       // お題数の下限（±で選べる範囲。上限は CONFIG.maxRounds＝10）
   const ROUNDS_DEFAULT = 5;                   // お題数の既定（少なめ＝方剤を組みやすい。プレイヤーは±で変更可）
   let selectedRounds = ROUNDS_DEFAULT;        // 1ゲームのお題数（実際はテーマの症状数で頭打ち）
-  // スタート画面で選んだモード： "solo"（1人）／ "vs"（同じ端末で2人交代）
+  // スタート画面で選んだモード： "solo"（自習・1人）／ "cpu"（CPUと対戦）／ "vs"（同じ端末で2人交代）
   let selectedMode = "solo";
+  // CPU対戦の強さ： "easy"（やさしい・お邪魔しない）／ "normal"（ふつう・ときどきお邪魔）／ "hard"（つよい・積極的にお邪魔＋防御）
+  let selectedCpuLevel = "normal";
+  const cpuLevelNote = (l) =>
+    l === "easy" ? "お邪魔してきません。自分の方剤を組むことに専念します（やさしい）。"
+    : l === "hard" ? "積極的にお邪魔カードを使い、来訪者で守ってきます（手強い）。"
+    : "ときどきお邪魔カードを使ってきます（ふつう）。";
   // 選択中のテーマ（モード切替で再描画しても保持する）
   let selectedThemes = ["kaze"];
 
@@ -106,8 +112,8 @@
   // 選んだテーマ集合から、使う方剤・症状・生薬を導く
   function themeSelection(themeIds) {
     const set = new Set(themeIds);
-    // 選んだトークンは「テーマid」でも「病位id」でもよい。どちらかに一致した方剤を集める。
-    const activeFormulas = formulas.filter(f => set.has(f.theme) || (f.byoi && set.has(f.byoi)));
+    // 選んだトークンは「テーマid」でも「サブグループid」でもよい。どちらかに一致した方剤を集める。
+    const activeFormulas = formulas.filter(f => set.has(f.theme) || (f.subgroup && set.has(f.subgroup)));
     const activeFormulaIds = new Set(activeFormulas.map(f => f.id));
     // 症状は「正解の方剤」がテーマに含まれるものだけ
     const activeSymptoms = symptoms.filter(s => activeFormulaIds.has(primaryFormulaId(s)));
@@ -188,6 +194,7 @@
       justDrawn: [], usedActions: [], roundOf: 0, guard: 0,
       // --- 対戦メタ ---
       active: 0,
+      cpuLevel: selectedCpuLevel, // CPU対戦のときの強さ（他モードでは未使用）
       players: null,       // 対戦：[盤スナップショット0, 盤スナップショット1]
       playerNames: isVs
         ? [(vsSetup && vsSetup[0].name) || "プレイヤー1", (vsSetup && vsSetup[1].name) || "プレイヤー2"]
@@ -197,11 +204,13 @@
       // 各自の編集デッキで盤を作る（vsSetup が無ければ既定 deckPrefs）
       const prefs0 = vsSetup ? vsSetup[0].prefs : null;
       const prefs1 = vsSetup ? vsSetup[1].prefs : null;
-      state.players = [makeBoard(sel, prefs0), makeBoard(sel, prefs1)];
+      state.players = [makeBoard(sel, prefs0, vsSetup && vsSetup[0].isCpu), makeBoard(sel, prefs1, vsSetup && vsSetup[1].isCpu)];
       nextRound();     // round=1・お題セット（対戦はここでは引かない）
       beginTurn(0);    // 先手＝プレイヤー1が初手を引く
     } else {
-      state.deck = shuffle(buildDeck(sel.herbIds));
+      // 自習（ソロ）は相手がいないので、お邪魔・来訪者は絶対に入れない（deckPrefs に残っていても 0 で上書き）
+      const soloPrefs = Object.assign({}, deckPrefs, { jama: 0, visitor: 0 });
+      state.deck = shuffle(buildDeck(sel.herbIds, soloPrefs));
       nextRound();     // round=1・お題セット・手札を初手6枚まで補充
     }
     render();
@@ -210,11 +219,12 @@
   // ---- 対戦：盤（プレイヤーの持ち物）を入れ替える仕組み ----------------
   // アクティブ盤は state の下記フィールドに入る。手番交代で退避／復元する。
   const BOARD_FIELDS = ["deck", "discard", "hand", "shelf", "roundTurn", "drewThisTurn", "score", "log", "usedActions", "roundOf", "guard"];
-  function makeBoard(sel, prefs) {
+  function makeBoard(sel, prefs, isCpu) {
     return {
       deck: shuffle(buildDeck(sel.herbIds, prefs)),
       discard: [], hand: [], shelf: [],
       roundTurn: 1, drewThisTurn: false, score: 0, log: [], usedActions: [], roundOf: 0, guard: 0,
+      isCpu: !!isCpu,   // このプレイヤーはコンピュータか（対CPU戦で使用）
     };
   }
   function saveBoard(i) { const b = state.players[i]; for (const f of BOARD_FIELDS) b[f] = state[f]; }
@@ -298,16 +308,251 @@
       state.justDrawn = added;
       render(); // render の最後で state.justDrawn は空にされるので、控えの added を使う
       harvestFlash(dealtUids.concat(added)); // 配り＋今引いた2枚に収穫があればイラストをふわっと表示
+      if (isCpuPlayer(state.active)) scheduleCpuTurn(); // CPUの手番なら、ドロー完了後に自動で行動
     };
     const delay = (window.KAMPO_DECK || window.KAMPO_ACTIONS) ? 0 : (CONFIG.turnDrawDelayMs || 0);
     if (delay > 0) drawTimer = setTimeout(doDraw, delay);
     else doDraw();
   }
 
-  // 現在の盤を退避して、目隠し画面を挟み、next の手番を始める
+  // 対CPU戦の判定
+  const isCpuPlayer = (i) => !!(state.players && state.players[i] && state.players[i].isCpu);
+  const hasCpu = () => !!(state.players && state.players.some(p => p && p.isCpu));
+
+  // 現在の盤を退避して、next の手番を始める
   function handoffTo(next) {
     saveBoard(state.active);
-    showHandoff(next);
+    // 対CPU戦は「目隠し」不要（人間は1人）。CPUの番は「考え中」で覆って、人間が盤を触れないようにする。
+    if (hasCpu()) {
+      if (isCpuPlayer(next)) {
+        showCpuThinking();
+        beginTurn(next);   // ここで render() は呼ばない：beginTurn→ドローが描画する。
+        //                    直後に render() すると、CPUが提出して出した結果モーダルを消してしまう。
+      } else {
+        removeCpuThinking(); // 人間の番になる瞬間にだけカバーを外す（CPUの手札を最後まで見せない）
+        beginTurn(next);
+        render();            // 人間の手番：すぐ盤を表示
+      }
+      return;
+    }
+    showHandoff(next);  // 2人対戦：目隠しを挟む
+  }
+
+  // CPUの番を覆うカバー（人間の誤操作防止＋CPUの手札を見せない）。
+  //   外すのは「人間の手番になる瞬間(handoffTo)」か「ゲーム終了画面」だけ。
+  //   CPUが提出したときは結果モーダルをこのカバーの上に重ねる＝下のCPU手札は最後まで見えない。
+  function showCpuThinking() {
+    if (document.getElementById("cpu-thinking")) return;
+    const o = document.createElement("div");
+    o.id = "cpu-thinking"; o.className = "overlay";
+    o.innerHTML = `<div class="cpu-think"><div class="cpu-think-face">🤖</div><p class="cpu-think-text">CPUの番… 考えています</p></div>`;
+    document.body.appendChild(o);  // body直下＝この後の自動ドローの render でも消えない
+  }
+  function removeCpuThinking() { const o = document.getElementById("cpu-thinking"); if (o) o.remove(); }
+
+  // ---- CPU（コンピュータ）の頭脳 ----------------------------------
+  // シミュ(sim/theme-hitrate.js)と同じ考え方：お題に得点する方剤を、手札の生薬＋棚の薬瓶から
+  //   組めるなら提出。組めなければ、お題に不要な生薬・余った重複を捨てて手番を返す（パスはしない）。
+  function scheduleCpuTurn() {
+    const delay = (window.KAMPO_DECK || window.KAMPO_ACTIONS) ? 0 : (CONFIG.cpuThinkMs || 800);
+    if (delay > 0) setTimeout(runCpuTurn, delay); else runCpuTurn();
+  }
+
+  // 方剤 f を「手札の生薬＋（部分集合の）薬瓶」でちょうど組めるか。組めれば使う手札uid・薬瓶uidを返す。
+  //   useBottles=false は手札だけで試す（薬瓶を無駄に消費しないよう、まず手札だけ→だめなら薬瓶も）。
+  function cpuAssemble(f, handHerbs, bottles, useBottles) {
+    const need = new Set(f.herbs);
+    const covered = new Set();
+    const bottleUids = [];
+    if (useBottles) {
+      const usable = bottles.filter(b => b.herbs.every(h => need.has(h))).sort((a, b) => b.herbs.length - a.herbs.length);
+      for (const b of usable) {
+        if (b.herbs.some(h => covered.has(h))) continue; // 重複する薬瓶は使わない
+        b.herbs.forEach(h => covered.add(h));
+        bottleUids.push(b.uid);
+      }
+    }
+    const handUids = [];
+    const pool = handHerbs.slice();
+    for (const h of f.herbs) {
+      if (covered.has(h)) continue;
+      const idx = pool.findIndex(c => c.id === h);
+      if (idx < 0) return null; // 足りない生薬がある
+      handUids.push(pool[idx].uid); pool.splice(idx, 1);
+    }
+    return { handUids, bottleUids };
+  }
+
+  // いま提出できる最良の方剤を選ぶ（お題のマッチ点が高い→味数が多い順）。無ければ null。
+  function cpuBestSubmit() {
+    const sym = state.currentSymptom;
+    if (!sym) return null;
+    const handHerbs = state.hand.filter(c => !isAction(c.id));
+    const candidates = Object.keys(sym.score)
+      .filter(fid => sym.score[fid] > 0 && formulaById[fid])
+      .map(fid => formulaById[fid])
+      .sort((a, b) => (sym.score[b.id] - sym.score[a.id]) || (b.herbs.length - a.herbs.length));
+    for (const f of candidates) {
+      const plan = cpuAssemble(f, handHerbs, state.shelf, false) || cpuAssemble(f, handHerbs, state.shelf, true);
+      if (plan) return Object.assign({ formula: f }, plan);
+    }
+    return null;
+  }
+
+  // お題に不要な生薬・余った重複を、手札上限(handSoft)まで捨てる。
+  //   ※必ず手番を返せるよう、最後は補助・お邪魔カードも捨てて確実に上限以下にする（フリーズ防止）。
+  function cpuDiscardExcess() {
+    const sym = state.currentSymptom;
+    const needed = new Set();
+    if (sym) Object.keys(sym.score).filter(fid => sym.score[fid] > 0 && formulaById[fid])
+      .forEach(fid => formulaById[fid].herbs.forEach(h => needed.add(h)));
+    let guard = 0;
+    while (state.hand.length > CONFIG.handSoft && guard++ < 40) {
+      const c = state.hand;
+      let drop = c.find(x => !isAction(x.id) && !needed.has(x.id));   // お題に不要な生薬
+      if (!drop) { const cnt = {}; c.forEach(x => { if (!isAction(x.id)) cnt[x.id] = (cnt[x.id] || 0) + 1; });
+        drop = c.find(x => !isAction(x.id) && cnt[x.id] > 1); }        // 余った重複
+      if (!drop) drop = c.find(x => x.id === "act:jama");             // 使えなかったお邪魔
+      if (!drop) drop = c.find(x => x.id === "act:visitor");          // 使えなかった来訪者
+      if (!drop) drop = c.find(x => !isAction(x.id));                 // それでも余れば生薬
+      if (!drop) drop = c.find(x => isAction(x.id));                  // 最後の手段：補助カードも捨てる
+      if (!drop) break;
+      discardCard(drop.uid);
+    }
+  }
+
+  // 強さ設定 → CPUが使う手（お邪魔の度合いで難易度が上がる）
+  //   easy  ：カードを使わない（自分の方剤を組むだけ＝一番やさしい）
+  //   normal：収穫・大収穫で自分を整え、相手が薬瓶を2つ以上ためたらお邪魔する
+  //   hard  ：normalに加え、相手が1つでも薬瓶を持てばお邪魔、相手がお邪魔を持てば来訪者で防御
+  function cpuStrategy() {
+    const l = (state && state.cpuLevel) || "normal";
+    if (l === "easy")  return { harvest: false, bigHarvest: false, jama: false, visitor: false, jamaMinBottles: 99 };
+    if (l === "hard")  return { harvest: true,  bigHarvest: true,  jama: true,  visitor: true,  jamaMinBottles: 1 };
+    return               { harvest: true,  bigHarvest: true,  jama: true,  visitor: false, jamaMinBottles: 2 };
+  }
+
+  // 方剤 f を「手札の生薬＋薬瓶」で組もうとし、足りない生薬(missing)も報告する（cpuAssembleの寛容版）。
+  function cpuCover(f, handHerbs, bottles) {
+    const need = new Set(f.herbs);
+    const covered = new Set();
+    const bottleUids = [];
+    const usable = bottles.filter(b => b.herbs.every(h => need.has(h))).sort((a, b) => b.herbs.length - a.herbs.length);
+    for (const b of usable) {
+      if (b.herbs.some(h => covered.has(h))) continue;
+      b.herbs.forEach(h => covered.add(h));
+      bottleUids.push(b.uid);
+    }
+    const handUids = [], missing = [];
+    const pool = handHerbs.slice();
+    for (const h of f.herbs) {
+      if (covered.has(h)) continue;
+      const idx = pool.findIndex(c => c.id === h);
+      if (idx < 0) { missing.push(h); continue; }
+      handUids.push(pool[idx].uid); pool.splice(idx, 1);
+    }
+    return { handUids, bottleUids, missing };
+  }
+
+  // お題に得点する方剤を、得点の高い順に並べて返す
+  function cpuTargetFormulas() {
+    const sym = state.currentSymptom;
+    if (!sym) return [];
+    return Object.keys(sym.score)
+      .filter(fid => sym.score[fid] > 0 && formulaById[fid])
+      .map(fid => formulaById[fid])
+      .sort((a, b) => (sym.score[b.id] - sym.score[a.id]) || (a.herbs.length - b.herbs.length));
+  }
+
+  // 収穫カードで、山札から生薬 wantIds を手札へ（openHarvestPickerの非対話版＝CPU用）
+  function cpuHarvest(cardUid, wantIds) {
+    const counts = {};
+    for (const id of state.deck) { if (!isAction(id)) counts[id] = (counts[id] || 0) + 1; }
+    const stock = Object.values(counts).reduce((s, n) => s + n, 0);
+    const maxPick = Math.max(1, Math.min(CONFIG.harvestPick, stock));
+    const picked = [];
+    for (const id of wantIds) {
+      if (picked.length >= maxPick) break;
+      if ((counts[id] || 0) - picked.filter(p => p === id).length > 0) picked.push(id);
+    }
+    if (!picked.length) return false;
+    picked.forEach(id => { if (removeFromDeck(id)) state.hand.push({ uid: state.nextUid++, id }); });
+    state.hand = state.hand.filter(c => c.uid !== cardUid);
+    state.pot.hand = state.pot.hand.filter(u => u !== cardUid);
+    state.usedActions.push("act:harvest");
+    flash(`🤖 CPUが収穫を使った（生薬 ${picked.length}枚）。`, "ok");
+    render();
+    return true;
+  }
+
+  // いま組めないとき、収穫で「あと少しで完成する方剤」の不足生薬を山札から取る
+  function cpuTryHarvestForTarget() {
+    const harv = state.hand.find(c => c.id === "act:harvest");
+    if (!harv) return false;
+    const handHerbs = state.hand.filter(c => !isAction(c.id));
+    const deckCounts = {};
+    for (const id of state.deck) { if (!isAction(id)) deckCounts[id] = (deckCounts[id] || 0) + 1; }
+    for (const f of cpuTargetFormulas()) {
+      const { missing } = cpuCover(f, handHerbs, state.shelf);
+      if (missing.length === 0 || missing.length > CONFIG.harvestPick) continue;
+      const need = {}; missing.forEach(h => need[h] = (need[h] || 0) + 1);
+      if (Object.keys(need).every(h => (deckCounts[h] || 0) >= need[h])) {
+        return cpuHarvest(harv.uid, missing);   // 山札に不足分が揃っている方剤だけ狙う
+      }
+    }
+    return false;
+  }
+
+  // 必要な生薬が捨て札に埋もれているとき、大収穫で山札へ戻す（そのあと収穫で拾える）
+  function cpuTryBigHarvest() {
+    const big = state.hand.find(c => c.id === "act:daishukaku");
+    if (!big || state.discard.length === 0) return false;
+    const handHerbs = state.hand.filter(c => !isAction(c.id));
+    const deckCounts = {}, allCounts = {};
+    for (const id of state.deck) if (!isAction(id)) deckCounts[id] = (deckCounts[id] || 0) + 1;
+    for (const id of state.deck.concat(state.discard)) if (!isAction(id)) allCounts[id] = (allCounts[id] || 0) + 1;
+    for (const f of cpuTargetFormulas()) {
+      const { missing } = cpuCover(f, handHerbs, state.shelf);
+      if (missing.length === 0 || missing.length > CONFIG.harvestPick) continue;
+      const need = {}; missing.forEach(h => need[h] = (need[h] || 0) + 1);
+      const availNow   = Object.keys(need).every(h => (deckCounts[h] || 0) >= need[h]);
+      const availAfter = Object.keys(need).every(h => (allCounts[h]  || 0) >= need[h]);
+      if (!availNow && availAfter) { useBigHarvest(big.uid); return true; } // 戻せば拾える見込みがあるときだけ
+    }
+    return false;
+  }
+
+  // お邪魔（招かれざる客）：相手が薬瓶を規定数以上ためていたら1つ壊す
+  function cpuMaybeAttack(S) {
+    const j = state.hand.find(c => c.id === "act:jama");
+    if (!j) return;
+    const opp = 1 - state.active;
+    const oppBottles = (state.players[opp].shelf || []).length;
+    if (oppBottles < S.jamaMinBottles) return;
+    useJama(j.uid);   // 相手の来訪者・ランダム対象・消費はすべて useJama が処理
+  }
+
+
+  function runCpuTurn() {
+    if (!state || state.finished || !state.currentSymptom || !isCpuPlayer(state.active)) { removeCpuThinking(); return; }
+    const S = cpuStrategy();
+    // 盤は「考え中」カバーで覆ったまま考える（CPUの手札を人間に見せない）。
+    if (S.jama)    cpuMaybeAttack(S); // お邪魔（ふつう・つよい）
+    let plan = cpuBestSubmit();
+    if (!plan && S.harvest && cpuTryHarvestForTarget()) plan = cpuBestSubmit();     // 収穫で不足を補って再挑戦
+    if (!plan && S.bigHarvest && cpuTryBigHarvest()) {                              // 大収穫で立て直し→収穫→再挑戦
+      if (S.harvest) cpuTryHarvestForTarget();
+      plan = cpuBestSubmit();
+    }
+    // カバーはここでは外さない（外すと一瞬CPUの手札が見える）。
+    //   提出時：結果モーダルをカバーの上に重ねる。手番を返す時：handoffTo が人間の番でカバーを外す。
+    if (plan) {
+      state.pot = { hand: plan.handUids.slice(), bottles: plan.bottleUids.slice() };
+      submitPot();        // 得点確定→結果モーダル（カバーの上）→（次へで）人間の手番へ
+      return;
+    }
+    cpuDiscardExcess();
+    endTurn();            // 提出できないので手番を人間へ返す（handoffTo でカバーが外れる）
   }
   // 対戦の現在得点・薬瓶数・手札数（アクティブは live、相手は保存済みの盤から）
   const scoreOf = (i) => (i === state.active ? state.score : (state.players ? state.players[i].score : 0));
@@ -498,24 +743,49 @@
 
   function showStartScreen() {
     const app = $("#app");
+    // CPU対戦では、あなたも「招かれざる客／来訪者」を使える。デッキ編集に出すため既定枚数を用意（未設定なら）。
+    if (selectedMode === "cpu") {
+      if (!Number.isFinite(deckPrefs.jama)) deckPrefs.jama = CONFIG.jamaCardCopies;
+    }
     app.innerHTML = `
       <div class="start-screen">
         <h1>学んで効く！<span>漢方カードバトル</span>${CONFIG.editionLabel ? `<span class="edition-badge">${CONFIG.editionLabel}</span>` : ""}</h1>
-        <button type="button" id="zukan-btn" class="ghost-btn zukan-btn">📖 収録図鑑（生薬・方剤の一覧）</button>
+        <div class="title-btns">
+          <button type="button" id="intro-btn" class="ghost-btn intro-btn">🎬 遊び方の解説動画</button>
+          <button type="button" id="zukan-btn" class="ghost-btn zukan-btn">📖 収録図鑑（生薬・方剤の一覧）</button>
+        </div>
         <div class="mode-select">
-          <button type="button" class="mode-btn ${selectedMode === "solo" ? "selected" : ""}" data-mode="solo">🧑 ソロ</button>
+          <button type="button" class="mode-btn ${selectedMode !== "vs" ? "selected" : ""}" data-mode="solo">🧑 ソロ（1人）</button>
           <button type="button" class="mode-btn ${selectedMode === "vs" ? "selected" : ""}" data-mode="vs">🧑‍🤝‍🧑 2人対戦</button>
         </div>
+        ${selectedMode !== "vs" ? `
+        <div class="submode-tabs">
+          <button type="button" class="submode-tab ${selectedMode === "solo" ? "selected" : ""}" data-submode="solo">📖 自習（相手なし）</button>
+          <button type="button" class="submode-tab ${selectedMode === "cpu" ? "selected" : ""}" data-submode="cpu">🤖 CPUと対戦</button>
+        </div>` : ""}
         <p class="mode-note">${selectedMode === "vs"
           ? "同じ端末を交代で使います（目隠し→交代）。同じお題を先に解いた方が高得点。"
-          : "1人でじっくり。テーマの症状を解いて診療結果をめざします。"}</p>
+          : selectedMode === "cpu"
+          ? "コンピュータと1人で対戦。同じお題を先に正しく解いた方が高得点。あなたのデッキを編集して挑戦。"
+          : "1人でじっくり自習。相手なしで、テーマの症状を解いて診療結果をめざします。"}</p>
+        ${selectedMode === "cpu" ? `
+        <div class="cpu-level" role="group" aria-label="CPUの強さ">
+          <span class="cpu-level-title">CPUの強さ</span>
+          <div class="cpu-level-btns">
+            <button type="button" class="cpu-level-btn ${selectedCpuLevel === "easy" ? "selected" : ""}" data-level="easy">やさしい</button>
+            <button type="button" class="cpu-level-btn ${selectedCpuLevel === "normal" ? "selected" : ""}" data-level="normal">ふつう</button>
+            <button type="button" class="cpu-level-btn ${selectedCpuLevel === "hard" ? "selected" : ""}" data-level="hard">つよい</button>
+          </div>
+          <p class="cpu-level-note">${cpuLevelNote(selectedCpuLevel)}</p>
+        </div>` : ""}
         <p class="start-lead">今回あそぶ<b>テーマ</b>を選んでください。選んだテーマの症状だけが出て、
           デッキもそのテーマに必要な生薬だけで組まれます。<br>
           テーマを多く選ぶほどデッキが薄まり、<b>難しく</b>なります。</p>
         <div class="theme-list">
           ${themes.map(t => {
             const n = formulas.filter(f => f.theme === t.id).length;
-            const subs = byoi.filter(b => b.theme === t.id);   // このテーマの病位サブ分類
+            const subs = subgroups.filter(b => b.theme === t.id);   // このテーマのサブグループ
+            const subLabel = t.subLabel || "分類";                   // 軸の呼び名（かぜ=病位／安神=証）
             return `
               <label class="theme-item">
                 <input type="checkbox" class="theme-check" value="${t.id}" ${selectedThemes.includes(t.id) ? "checked" : ""}>
@@ -525,12 +795,12 @@
                 </span>
                 <button type="button" class="detail-btn" data-detail="${t.id}">詳細</button>
               </label>
-              ${subs.length ? `<div class="byoi-list">
-                <p class="byoi-lead">▸ 病位でしぼる（1つだけ選ぶとデッキが小さく＝方剤を組みやすい。上の「${t.name.replace(/（.*/, "")}」を選べば全部）</p>
+              ${subs.length ? `<div class="subgroup-list">
+                <p class="subgroup-lead">▸ ${subLabel}でしぼる（1つだけ選ぶとデッキが小さく＝方剤を組みやすい。上の「${t.name.replace(/（.*/, "")}」を選べば全部）</p>
                 ${subs.map(b => {
-                  const bn = formulas.filter(f => f.byoi === b.id).length;
+                  const bn = formulas.filter(f => f.subgroup === b.id).length;
                   return `
-                    <label class="theme-item byoi-item">
+                    <label class="theme-item subgroup-item">
                       <input type="checkbox" class="theme-check" value="${b.id}" ${selectedThemes.includes(b.id) ? "checked" : ""}>
                       <span class="theme-body">
                         <span class="theme-name">${b.name} <span class="theme-count">${bn}方剤</span></span>
@@ -550,7 +820,7 @@
             <button type="button" class="rounds-step" data-delta="1">＋</button>
           </span>
         </div>
-        ${selectedMode === "solo" ? deckEditorHTML() : `
+        ${selectedMode !== "vs" ? deckEditorHTML(selectedMode === "cpu") : `
         <p class="vs-setup-hint">対戦では、このあと<b>各プレイヤーが自分の名前とデッキ</b>を設定します（相手には見えません）。</p>`}
         <p class="start-note" id="start-note"></p>
         <button id="start-btn" class="primary-btn">${selectedMode === "vs" ? "プレイヤーの準備へ →" : "この内容であそぶ"}</button>
@@ -586,11 +856,29 @@
 
     app.querySelectorAll(".mode-btn").forEach(b => b.addEventListener("click", () => {
       selectedThemes = getCheckedThemes();          // 選択テーマを保持
-      selectedMode = b.dataset.mode === "vs" ? "vs" : "solo";
-      showStartScreen();                            // 再描画（対戦はデッキ編集を隠す）
+      // 上段は「ソロ（1人）」か「2人対戦」。ソロを押したときは、直前が2人なら自習を既定に、
+      // すでにソロ側(自習/CPU)ならその選択を保つ。
+      if (b.dataset.mode === "vs") selectedMode = "vs";
+      else if (selectedMode === "vs") selectedMode = "solo";
+      showStartScreen();                            // 再描画
+    }));
+    // ソロ内のタブ（自習／CPUと対戦）
+    app.querySelectorAll(".submode-tab").forEach(b => b.addEventListener("click", () => {
+      selectedThemes = getCheckedThemes();
+      selectedMode = b.dataset.submode;             // "solo"(自習) か "cpu"
+      showStartScreen();
+    }));
+    // CPUの強さ（やさしい／ふつう／つよい）。デッキ編集を消さないよう、選択表示だけ更新する。
+    app.querySelectorAll(".cpu-level-btn").forEach(b => b.addEventListener("click", () => {
+      selectedCpuLevel = b.dataset.level;
+      app.querySelectorAll(".cpu-level-btn").forEach(x => x.classList.toggle("selected", x.dataset.level === selectedCpuLevel));
+      const note = app.querySelector(".cpu-level-note");
+      if (note) note.textContent = cpuLevelNote(selectedCpuLevel);
     }));
     const zukanBtn = $("#zukan-btn");
     if (zukanBtn) zukanBtn.addEventListener("click", openZukan);
+    const introBtn = $("#intro-btn");
+    if (introBtn) introBtn.addEventListener("click", openIntroVideo);
     app.querySelectorAll(".rounds-step").forEach(b => b.addEventListener("click", () => {
       const next = selectedRounds + Number(b.dataset.delta);
       selectedRounds = Math.max(ROUNDS_MIN, Math.min(CONFIG.maxRounds, next));
@@ -603,12 +891,25 @@
       e.stopPropagation();
       openThemeDetail(b.dataset.detail);
     }));
-    if (selectedMode === "solo") wireDeckEditor(app);   // ソロのデッキ編集を配線
+    if (selectedMode !== "vs") wireDeckEditor(app);   // ソロ・CPU対戦のデッキ編集を配線
     $("#start-btn").addEventListener("click", () => {
       const ids = getCheckedThemes();
       if (ids.length === 0) return;
       selectedThemes = ids;
-      if (selectedMode === "vs") startVsSetup(ids);     // 対戦：各自の準備画面へ
+      if (selectedMode === "vs") startVsSetup(ids);     // 2人対戦：各自の準備画面へ
+      else if (selectedMode === "cpu") {                // CPU対戦：あなた＝P1、CPU＝P2（おまかせデッキ）
+        // CPUのお邪魔・来訪者は強さで変える：やさしい＝持たない／ふつう＝お邪魔のみ／つよい＝お邪魔＋来訪者
+        const aggressive = selectedCpuLevel !== "easy";
+        const cpuPrefs = {
+          herbs: guaranteeCounts(ids),
+          harvest: CONFIG.harvestCardCopies, daishukaku: CONFIG.bigHarvestCardCopies,
+          jama: aggressive ? CONFIG.jamaCardCopies : 0,
+        };
+        newGame(ids, "vs", [
+          { name: "あなた", prefs: deckPrefs, isCpu: false },
+          { name: "CPU",   prefs: cpuPrefs,  isCpu: true },
+        ]);
+      }
       else newGame(ids, "solo");
     });
     refresh();
@@ -679,12 +980,36 @@
     $("#setup-handoff-btn").addEventListener("click", () => showVsSetup(next));
   }
 
+  // 遊び方の解説動画をYouTube埋め込みでポップアップ再生。
+  //   動画自体はYouTube側（限定公開）にあるので、リポジトリは重くならない。
+  //   ⚠ 埋め込みURLはリンクを含むため、build-trial.js の (C)自動ガードの
+  //     allow（例外）に youtube 系ドメインを登録している（未登録だと公開ビルドが止まる）。
+  const INTRO_VIDEO_ID = "mMnYQ9sKwI8"; // 遊び方・解説動画（youtube-nocookie 埋め込み）
+  function openIntroVideo() {
+    const overlay = document.createElement("div");
+    overlay.className = "overlay";
+    overlay.innerHTML = `
+      <div class="detail-modal intro-modal">
+        <div class="detail-title">🎬 遊び方の解説動画<span>ルールと進め方</span></div>
+        <div class="intro-video">
+          <iframe src="https://www.youtube-nocookie.com/embed/${INTRO_VIDEO_ID}?rel=0"
+            title="遊び方の解説動画" allowfullscreen
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"></iframe>
+        </div>
+        <button type="button" class="primary-btn detail-close">閉じる</button>
+      </div>`;
+    $("#app").appendChild(overlay);
+    const close = () => overlay.remove(); // iframe ごと消す＝再生も止まる
+    overlay.querySelector(".detail-close").addEventListener("click", close);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  }
+
   // テーマの「詳細」：そのテーマの方剤一覧（構成生薬つき）をモーダル表示
   // 収録図鑑：いま window.KAMPO に入っている生薬・方剤をすべて一覧する。
   //   お試し版では KAMPO 自体が絞り込まれているので、自動的に収録分だけが並ぶ（漏れない）。
   function openZukan() {
     const themeShortOf = id => ((themes.find(t => t.id === id) || {}).name || id).replace(/（.*/, "");
-    const byoiNameOf  = id => (byoi.find(b => b.id === id) || {}).name || "";
+    const subNameOf  = id => (subgroups.find(b => b.id === id) || {}).name || "";
     const asked = new Set(symptoms.map(primaryFormulaId));   // お題として問われる方剤
 
     // 並び替え用の比較関数
@@ -703,7 +1028,7 @@
           <span class="detail-fname">${f.name}<span class="detail-fkana">${f.kana}</span></span>
           <span class="detail-tag ${asked.has(f.id) ? "tag-asked" : "tag-base"}">${asked.has(f.id) ? "出題" : "土台"}</span>
         </div>
-        <div class="zk-fmeta">${f.no ? `<span class="zk-no">${f.no}番</span>` : ""}<span class="zk-theme">${themeShortOf(f.theme)}</span>${f.byoi && byoiNameOf(f.byoi) ? `<span class="zk-byoi">${byoiNameOf(f.byoi)}</span>` : ""}</div>
+        <div class="zk-fmeta">${f.no ? `<span class="zk-no">${f.no}番</span>` : ""}<span class="zk-theme">${themeShortOf(f.theme)}</span>${f.subgroup && subNameOf(f.subgroup) ? `<span class="zk-subgroup">${subNameOf(f.subgroup)}</span>` : ""}</div>
         <div class="detail-herbs">${f.herbs.map(id => herbById[id].name).join("・")}<span class="detail-count">（${f.herbs.length}味）</span></div>
         ${f.note ? `<div class="zk-note">${f.note}</div>` : ""}
       </div>`;
@@ -756,10 +1081,10 @@
   }
 
   function openThemeDetail(themeId) {
-    const theme = themes.find(t => t.id === themeId) || byoi.find(b => b.id === themeId);
+    const theme = themes.find(t => t.id === themeId) || subgroups.find(b => b.id === themeId);
     if (!theme) return;
     // themeId はテーマid（そのテーマ全方剤）でも病位id（その病位の方剤）でもよい
-    const inGroup = f => f.theme === themeId || f.byoi === themeId;
+    const inGroup = f => f.theme === themeId || f.subgroup === themeId;
     // このグループで「お題として問われる」方剤id（症状の正解がこのグループの方剤）
     const asked = new Set(
       symptoms.map(primaryFormulaId)
@@ -1154,7 +1479,7 @@
       showRoundResult(f, match, bonus, sizeBonus, total, () => {
         const winner = state.active;
         nextRound();
-        if (state.finished) { saveBoard(winner); render(); return; }
+        if (state.finished) { removeCpuThinking(); saveBoard(winner); render(); return; } // 終了画面ではカバーを外す
         handoffTo(1 - winner);
       });
       return;

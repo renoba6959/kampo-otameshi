@@ -293,7 +293,7 @@
     "name": "桂枝湯",
     "kana": "けいしとう",
     "theme": "kaze",
-    "byoi": "taiyo",
+    "subgroup": "taiyo",
     "herbs": [
       "keihi",
       "shakuyaku",
@@ -311,7 +311,7 @@
     "name": "葛根湯",
     "kana": "かっこんとう",
     "theme": "kaze",
-    "byoi": "taiyo",
+    "subgroup": "taiyo",
     "herbs": [
       "kakkon",
       "maou",
@@ -331,7 +331,7 @@
     "name": "麻黄湯",
     "kana": "まおうとう",
     "theme": "kaze",
-    "byoi": "taiyo",
+    "subgroup": "taiyo",
     "herbs": [
       "maou",
       "keihi",
@@ -603,7 +603,8 @@
   {
     "id": "kaze",
     "name": "かぜ（表〜少陽）",
-    "desc": "急性期のかぜ。麻黄・葛根・柴胡など。病位でしぼり込むこともできます。"
+    "desc": "急性期のかぜ。麻黄・葛根・柴胡など。病位でしぼり込むこともできます。",
+    "subLabel": "病位"
   },
   {
     "id": "hozai",
