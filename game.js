@@ -384,17 +384,18 @@
   }
 
   // いま提出できる最良の方剤を選ぶ（お題のマッチ点が高い→味数が多い順）。無ければ null。
-  function cpuBestSubmit() {
-    const sym = state.currentSymptom;
-    if (!sym) return null;
+  // 方剤 f を「手札の生薬＋薬瓶」でちょうど組めるか（提出プラン or null）
+  function cpuPlanFor(f) {
     const handHerbs = state.hand.filter(c => !isAction(c.id));
-    const candidates = Object.keys(sym.score)
-      .filter(fid => sym.score[fid] > 0 && formulaById[fid])
-      .map(fid => formulaById[fid])
-      .sort((a, b) => (sym.score[b.id] - sym.score[a.id]) || (b.herbs.length - a.herbs.length));
-    for (const f of candidates) {
-      const plan = cpuAssemble(f, handHerbs, state.shelf, false) || cpuAssemble(f, handHerbs, state.shelf, true);
-      if (plan) return Object.assign({ formula: f }, plan);
+    const plan = cpuAssemble(f, handHerbs, state.shelf, false) || cpuAssemble(f, handHerbs, state.shelf, true);
+    return plan ? Object.assign({ formula: f }, plan) : null;
+  }
+
+  // いま提出できる中で最良の方剤（得点が高い→味数が多い順）。無ければ null。
+  function cpuBestSubmit() {
+    for (const f of cpuTargetFormulas()) {
+      const plan = cpuPlanFor(f);
+      if (plan) return plan;
     }
     return null;
   }
@@ -406,6 +407,9 @@
     const needed = new Set();
     if (sym) Object.keys(sym.score).filter(fid => sym.score[fid] > 0 && formulaById[fid])
       .forEach(fid => formulaById[fid].herbs.forEach(h => needed.add(h)));
+    // 既に薬瓶（土台）で確保済みの生薬は、手札に重ねて持つ必要がない＝余りとして捨ててよい
+    //   （これをしないと、積んだ土台の生薬コピーで手札が詰まり、大きい方剤を組めなくなる）
+    for (const b of state.shelf) for (const h of b.herbs) needed.delete(h);
     let guard = 0;
     while (state.hand.length > CONFIG.handSoft && guard++ < 40) {
       const c = state.hand;
@@ -422,14 +426,17 @@
   }
 
   // 強さ設定 → CPUが使う手（お邪魔の度合いで難易度が上がる）
-  //   easy  ：カードを使わない（自分の方剤を組むだけ＝一番やさしい）
-  //   normal：収穫・大収穫で自分を整え、相手が薬瓶を2つ以上ためたらお邪魔する
+  //   easy  ：カードを使わず、土台も積まない（手札だけで組む＝一番やさしい）
+  //   normal：収穫・大収穫で整え、土台を薬瓶に積んで大きい方剤も狙い、相手が薬瓶を2つ以上ためたらお邪魔
   //   hard  ：normalに加え、相手が1つでも薬瓶を持てばお邪魔、相手がお邪魔を持てば来訪者で防御
+  //   bottle：土台（部分方剤）を薬瓶に確保して、ターンをまたいで大きい方剤を組み上げるか
+  //   build ：最有力（最高得点）の方剤に「あと少し」なら安売りせず組み上げにいくか（つよいのみ）
+  const CPU_CLOSE = 2; // 「あと少し」の判定：最有力方剤の不足生薬がこの数以下なら組み上げにいく
   function cpuStrategy() {
     const l = (state && state.cpuLevel) || "normal";
-    if (l === "easy")  return { harvest: false, bigHarvest: false, jama: false, visitor: false, jamaMinBottles: 99 };
-    if (l === "hard")  return { harvest: true,  bigHarvest: true,  jama: true,  visitor: true,  jamaMinBottles: 1 };
-    return               { harvest: true,  bigHarvest: true,  jama: true,  visitor: false, jamaMinBottles: 2 };
+    if (l === "easy")  return { harvest: false, bigHarvest: false, bottle: false, build: false, jama: false, visitor: false, jamaMinBottles: 99 };
+    if (l === "hard")  return { harvest: true,  bigHarvest: true,  bottle: true,  build: true,  jama: true,  visitor: true,  jamaMinBottles: 1 };
+    return               { harvest: true,  bigHarvest: true,  bottle: true,  build: false, jama: true,  visitor: false, jamaMinBottles: 2 };
   }
 
   // 方剤 f を「手札の生薬＋薬瓶」で組もうとし、足りない生薬(missing)も報告する（cpuAssembleの寛容版）。
@@ -452,6 +459,18 @@
       handUids.push(pool[idx].uid); pool.splice(idx, 1);
     }
     return { handUids, bottleUids, missing };
+  }
+
+  // 方剤 f が「まだ組める見込み」か（不足生薬がすべて山札に残っているか）。
+  //   つよいCPUが土台を積み続けてよいかの判定に使う。山札に無ければ＝もう完成しない→粘らない。
+  function cpuFormulaReachable(f) {
+    const handHerbs = state.hand.filter(c => !isAction(c.id));
+    const { missing } = cpuCover(f, handHerbs, state.shelf);
+    if (!missing.length) return true;
+    const deckCounts = {};
+    for (const id of state.deck) { if (!isAction(id)) deckCounts[id] = (deckCounts[id] || 0) + 1; }
+    const need = {}; missing.forEach(h => need[h] = (need[h] || 0) + 1);
+    return Object.keys(need).every(h => (deckCounts[h] || 0) >= need[h]);
   }
 
   // お題に得点する方剤を、得点の高い順に並べて返す
@@ -485,14 +504,15 @@
     return true;
   }
 
-  // いま組めないとき、収穫で「あと少しで完成する方剤」の不足生薬を山札から取る
-  function cpuTryHarvestForTarget() {
+  // いま組めないとき、収穫で「あと少しで完成する方剤」の不足生薬を山札から取る。
+  //   only を渡すとその方剤だけを狙う（つよいCPUが最有力方剤に集中するため）。
+  function cpuTryHarvestForTarget(only) {
     const harv = state.hand.find(c => c.id === "act:harvest");
     if (!harv) return false;
     const handHerbs = state.hand.filter(c => !isAction(c.id));
     const deckCounts = {};
     for (const id of state.deck) { if (!isAction(id)) deckCounts[id] = (deckCounts[id] || 0) + 1; }
-    for (const f of cpuTargetFormulas()) {
+    for (const f of (only ? [only] : cpuTargetFormulas())) {
       const { missing } = cpuCover(f, handHerbs, state.shelf);
       if (missing.length === 0 || missing.length > CONFIG.harvestPick) continue;
       const need = {}; missing.forEach(h => need[h] = (need[h] || 0) + 1);
@@ -532,17 +552,97 @@
     useJama(j.uid);   // 相手の来訪者・ランダム対象・消費はすべて useJama が処理
   }
 
+  // 生薬idの集合が同じか（薬瓶の重複判定用）
+  const sameHerbSet = (a, b) => a.length === b.length && a.slice().sort().join(",") === b.slice().sort().join(",");
+  // 手札(生薬カード)から needHerbs をちょうど1枚ずつ拾えれば、その uid 配列を返す（無ければ null）
+  function cpuPickHandUids(handHerbs, needHerbs) {
+    const pool = handHerbs.slice(), uids = [];
+    for (const h of needHerbs) {
+      const idx = pool.findIndex(c => c.id === h);
+      if (idx < 0) return null;
+      uids.push(pool[idx].uid); pool.splice(idx, 1);
+    }
+    return uids;
+  }
+
+  // 土台づくり（積み上げ方式）：提出できないとき、最有力の目標方剤の「部分方剤（土台）」を
+  //   手札から薬瓶に確保する。薬瓶はお題をまたいで残るので、ターンを重ねて大きい方剤を組み上げられる。
+  //   1つでも確保できたら true（呼び出し側は収穫→再提出を試す）。
+  //   only を渡すとその方剤の土台だけを積む（つよいCPUが最有力方剤に集中するため）。
+  function cpuMaybeBottle(only) {
+    let bottled = false;
+    for (const T of (only ? [only] : cpuTargetFormulas())) {
+      // T の部分方剤（既知・T の生薬に完全に含まれる・T より小さい）を大きい順に
+      const subs = formulas
+        .filter(f => f.id !== T.id && f.herbs.length < T.herbs.length && f.herbs.every(h => T.herbs.includes(h)))
+        .sort((a, b) => b.herbs.length - a.herbs.length);
+      if (!subs.length) continue;
+      let progressed = true;
+      while (progressed) {
+        progressed = false;
+        // すでに棚にある（Tに使える）薬瓶が覆っている生薬は、二重に土台を作らない
+        const covered = new Set(
+          state.shelf.filter(b => b.herbs.every(h => T.herbs.includes(h))).flatMap(b => b.herbs)
+        );
+        const handHerbs = state.hand.filter(c => !isAction(c.id));
+        for (const sub of subs) {
+          if (state.shelf.some(b => sameHerbSet(b.herbs, sub.herbs))) continue; // 同じ薬瓶は作らない
+          if (sub.herbs.some(h => covered.has(h))) continue;                     // 既存土台と重複は避ける
+          const uids = cpuPickHandUids(handHerbs, sub.herbs);
+          if (!uids) continue;                                                   // 手札に土台がそろわない
+          state.pot = { hand: uids, bottles: [] };
+          if (!potFormula()) { state.pot = { hand: [], bottles: [] }; continue; } // 念のため：既知方剤でなければやめる
+          bottlePot();                                                           // 消費→棚へ確保（render/flash）
+          bottled = true; progressed = true;
+          break;                                                                 // 手札が変わったので作り直す
+        }
+      }
+      if (bottled) break;   // 最有力の目標に向けて積んだら十分（別の目標は次の手番で）
+    }
+    state.pot = { hand: [], bottles: [] };
+    return bottled;
+  }
+
 
   function runCpuTurn() {
     if (!state || state.finished || !state.currentSymptom || !isCpuPlayer(state.active)) { removeCpuThinking(); return; }
     const S = cpuStrategy();
     // 盤は「考え中」カバーで覆ったまま考える（CPUの手札を人間に見せない）。
     if (S.jama)    cpuMaybeAttack(S); // お邪魔（ふつう・つよい）
-    let plan = cpuBestSubmit();
-    if (!plan && S.harvest && cpuTryHarvestForTarget()) plan = cpuBestSubmit();     // 収穫で不足を補って再挑戦
-    if (!plan && S.bigHarvest && cpuTryBigHarvest()) {                              // 大収穫で立て直し→収穫→再挑戦
-      if (S.harvest) cpuTryHarvestForTarget();
+    let plan = null;
+
+    // つよい：賢く判断する。最有力（最高得点）の方剤に「あと少し」なら、小さな安売りをせず組み上げる。
+    if (S.build) {
+      const top = cpuTargetFormulas()[0];
+      if (top) {
+        plan = cpuPlanFor(top);                                                    // 最有力を今そのまま組めるか
+        if (!plan && S.harvest && cpuTryHarvestForTarget(top)) plan = cpuPlanFor(top); // 収穫で今完成できるか
+        if (!plan) {
+          // 最有力は今は組めない。不足が CPU_CLOSE 以下＝「あと少し」で、必要な生薬が山札に残っているなら、
+          //   小さな部分一致で安売りせず、土台を薬瓶に確保しつつ引いて、次の手番で組み切りにいく。
+          const handHerbs = state.hand.filter(c => !isAction(c.id));
+          const missing = cpuCover(top, handHerbs, state.shelf).missing;
+          if (missing.length && missing.length <= CPU_CLOSE && cpuFormulaReachable(top)) {
+            if (S.bottle) cpuMaybeBottle(top);   // 手札の土台を薬瓶に確保して手を軽くする
+            cpuDiscardExcess(); endTurn(); return;
+          }
+          // 遠い（あと少しではない）→ 下で作れる中の最善（部分一致でも）を出して点を取る
+        }
+      }
+    }
+
+    // ふつう・やさしい、または つよいが最有力に前進できなかったとき：作れる中で最善を提出
+    if (!plan) {
       plan = cpuBestSubmit();
+      if (!plan && S.harvest && cpuTryHarvestForTarget()) plan = cpuBestSubmit();     // 収穫で不足を補って再挑戦
+      if (!plan && S.bigHarvest && cpuTryBigHarvest()) {                              // 大収穫で立て直し→収穫→再挑戦
+        if (S.harvest) cpuTryHarvestForTarget();
+        plan = cpuBestSubmit();
+      }
+      if (!plan && S.bottle && cpuMaybeBottle()) {                                    // 土台を薬瓶に積んで大きい方剤を狙う
+        if (S.harvest) cpuTryHarvestForTarget();                                      // 積んだ後の残りを収穫で補い
+        plan = cpuBestSubmit();                                                       // 揃えば同じ手番で提出
+      }
     }
     // カバーはここでは外さない（外すと一瞬CPUの手札が見える）。
     //   提出時：結果モーダルをカバーの上に重ねる。手番を返す時：handoffTo が人間の番でカバーを外す。
