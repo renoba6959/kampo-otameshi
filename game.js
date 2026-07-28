@@ -97,10 +97,24 @@
   };
   const formulaById = Object.fromEntries(formulas.map(f => [f.id, f]));
   const symptomById = Object.fromEntries(symptoms.map(s => [s.id, s]));
-  // 構成生薬の集合を正規化した文字列キー（順不同・重複なしの厳密一致用）
-  const keyOf = (ids) => Array.from(new Set(ids)).sort().join(",");
+  // 方剤の見分けキー。生薬の「枚数（量）」まで区別するため、重複を潰さず並べる多重集合キー。
+  //   例：桂枝湯{芍薬×1} と 桂枝加芍薬湯{芍薬×2} を別方剤として見分けられる。
+  //   （既存方剤は重複生薬が無いのでキーは従来どおり＝影響なし）
+  const keyOf = (ids) => ids.slice().sort().join(",");
   const uniq = (ids) => Array.from(new Set(ids));
   const formulaByHerbKey = Object.fromEntries(formulas.map(f => [keyOf(f.herbs), f]));
+  // 薬味数＝構成生薬の「種類数」。量の重複（芍薬×2 など）は1種類として数える。
+  const sizeOf = (f) => new Set(f.herbs).size;
+  // 方剤の生薬を表示用テキストに。増量の生薬は「芍薬（多め）」と示す（重複は1回だけ・順序保持）。
+  const herbListText = (herbIds) => {
+    const cnt = {}; herbIds.forEach(h => cnt[h] = (cnt[h] || 0) + 1);
+    const seen = new Set(), parts = [];
+    for (const h of herbIds) {
+      if (seen.has(h)) continue; seen.add(h);
+      parts.push(herbById[h].name + (cnt[h] > 1 ? "（多め）" : ""));
+    }
+    return parts.join("・");
+  };
 
   const netsuClass = { "温": "netsu-warm", "寒": "netsu-cold", "平": "netsu-neutral" };
   const matchLabel = { 3: "完全一致", 2: "概ねOK", 1: "部分一致", 0: "証に不適合" };
@@ -206,7 +220,7 @@
       const prefs1 = vsSetup ? vsSetup[1].prefs : null;
       state.players = [makeBoard(sel, prefs0, vsSetup && vsSetup[0].isCpu), makeBoard(sel, prefs1, vsSetup && vsSetup[1].isCpu)];
       nextRound();     // round=1・お題セット（対戦はここでは引かない）
-      beginTurn(0);    // 先手＝プレイヤー1が初手を引く
+      revealRound(() => beginTurn(0)); // お題を見せてから、先手＝プレイヤー1が初手を引く
     } else {
       // 自習（ソロ）は相手がいないので、お邪魔・来訪者は絶対に入れない（deckPrefs に残っていても 0 で上書き）
       const soloPrefs = Object.assign({}, deckPrefs, { jama: 0, visitor: 0 });
@@ -350,6 +364,44 @@
   }
   function removeCpuThinking() { const o = document.getElementById("cpu-thinking"); if (o) o.remove(); }
 
+  // ---- お題のお披露目（症状カードを見せてから手番を始める）----------
+  // なぜ必要か：CPU戦でCPUが先手だと、人間が症状を読む前に一手で決着して点を取られ、
+  //   「何が起こった？」になる。お題を必ず先に見せてから手番を始めることで防ぐ。
+  //   2人対戦では、前の人の手札を隠しつつお題（＝公開情報）を両者で確認する場にもなる。
+  // 将来：症状ごとのイラストをここに大きく出す（症状データに illust: "ファイル名" を足すだけ）。
+  //   イラストが無いお題は飾り（🩺）を出す＝絵が揃っていなくても成立する。
+  // 文言について：今のゲームは「症状を読んで方剤を組む」までなので、ボタンは「方剤を組み立てていく」。
+  //   将来、証が変化する・問診で情報を集めるといった段階に進んだら「診察をはじめる／問診をする」に
+  //   改めるのが自然（今それを名乗ると、やっていることと合わず語弊がある）。
+  // body 直下に出す＝この後の render や自動ドローが走っても消えない（ボタンを押すまで残る）。
+  function showSymptomReveal(onStart) {
+    const s = state.currentSymptom;
+    const o = document.createElement("div");
+    o.id = "symptom-reveal";
+    o.className = "overlay";
+    o.innerHTML = `
+      <div class="reveal-modal">
+        <div class="reveal-round">お題 ${state.round} / ${state.totalRounds}</div>
+        <div class="reveal-illust">${s.illust
+          ? `<img src="${s.illust}" alt="" onerror="this.remove()">`
+          : `<div class="reveal-illust-none">🩺</div>`}</div>
+        <div class="reveal-label">症状カード（患者さんの訴え）</div>
+        <p class="reveal-text">${s.text}</p>
+        <button id="reveal-btn" class="primary-btn">方剤を組み立てていく →</button>
+      </div>`;
+    document.body.appendChild(o);
+    document.getElementById("reveal-btn").addEventListener("click", () => {
+      o.remove();
+      if (onStart) onStart();
+    });
+  }
+  // お題を見せてから proceed（そのお題の最初の手番）を実行する。
+  // 終了時やお題が無いときは何も見せず、そのまま続ける。
+  function revealRound(proceed) {
+    if (!state || state.finished || !state.currentSymptom) { proceed(); return; }
+    showSymptomReveal(proceed);
+  }
+
   // ---- CPU（コンピュータ）の頭脳 ----------------------------------
   // シミュ(sim/theme-hitrate.js)と同じ考え方：お題に得点する方剤を、手札の生薬＋棚の薬瓶から
   //   組めるなら提出。組めなければ、お題に不要な生薬・余った重複を捨てて手番を返す（パスはしない）。
@@ -358,27 +410,33 @@
     if (delay > 0) setTimeout(runCpuTurn, delay); else runCpuTurn();
   }
 
+  // 生薬idの多重集合（種類→枚数）を作る
+  const herbCounts = (ids) => { const c = {}; for (const h of ids) c[h] = (c[h] || 0) + 1; return c; };
+
   // 方剤 f を「手札の生薬＋（部分集合の）薬瓶」でちょうど組めるか。組めれば使う手札uid・薬瓶uidを返す。
   //   useBottles=false は手札だけで試す（薬瓶を無駄に消費しないよう、まず手札だけ→だめなら薬瓶も）。
+  //   ※量（芍薬×2 など）も正しく扱うため、必要枚数を「種類→残り枚数」で管理する。
   function cpuAssemble(f, handHerbs, bottles, useBottles) {
-    const need = new Set(f.herbs);
-    const covered = new Set();
+    const remaining = herbCounts(f.herbs);   // f を組むのに、まだ必要な各生薬の枚数
     const bottleUids = [];
     if (useBottles) {
-      const usable = bottles.filter(b => b.herbs.every(h => need.has(h))).sort((a, b) => b.herbs.length - a.herbs.length);
+      // 残り必要量に「多重集合として収まる」薬瓶を、大きい順に使う（芍薬×1の薬瓶を芍薬×2の方剤に使える）
+      const fits = (b) => { const c = herbCounts(b.herbs); return Object.keys(c).every(h => (remaining[h] || 0) >= c[h]); };
+      const usable = bottles.slice().sort((a, b) => b.herbs.length - a.herbs.length);
       for (const b of usable) {
-        if (b.herbs.some(h => covered.has(h))) continue; // 重複する薬瓶は使わない
-        b.herbs.forEach(h => covered.add(h));
+        if (!fits(b)) continue;
+        b.herbs.forEach(h => remaining[h]--);
         bottleUids.push(b.uid);
       }
     }
     const handUids = [];
     const pool = handHerbs.slice();
-    for (const h of f.herbs) {
-      if (covered.has(h)) continue;
-      const idx = pool.findIndex(c => c.id === h);
-      if (idx < 0) return null; // 足りない生薬がある
-      handUids.push(pool[idx].uid); pool.splice(idx, 1);
+    for (const h of Object.keys(remaining)) {
+      for (let k = 0; k < remaining[h]; k++) {
+        const idx = pool.findIndex(c => c.id === h);
+        if (idx < 0) return null; // 足りない生薬がある
+        handUids.push(pool[idx].uid); pool.splice(idx, 1);
+      }
     }
     return { handUids, bottleUids };
   }
@@ -440,23 +498,25 @@
   }
 
   // 方剤 f を「手札の生薬＋薬瓶」で組もうとし、足りない生薬(missing)も報告する（cpuAssembleの寛容版）。
+  //   量（芍薬×2 など）も正しく扱う。
   function cpuCover(f, handHerbs, bottles) {
-    const need = new Set(f.herbs);
-    const covered = new Set();
+    const remaining = herbCounts(f.herbs);
     const bottleUids = [];
-    const usable = bottles.filter(b => b.herbs.every(h => need.has(h))).sort((a, b) => b.herbs.length - a.herbs.length);
+    const fits = (b) => { const c = herbCounts(b.herbs); return Object.keys(c).every(h => (remaining[h] || 0) >= c[h]); };
+    const usable = bottles.slice().sort((a, b) => b.herbs.length - a.herbs.length);
     for (const b of usable) {
-      if (b.herbs.some(h => covered.has(h))) continue;
-      b.herbs.forEach(h => covered.add(h));
+      if (!fits(b)) continue;
+      b.herbs.forEach(h => remaining[h]--);
       bottleUids.push(b.uid);
     }
     const handUids = [], missing = [];
     const pool = handHerbs.slice();
-    for (const h of f.herbs) {
-      if (covered.has(h)) continue;
-      const idx = pool.findIndex(c => c.id === h);
-      if (idx < 0) { missing.push(h); continue; }
-      handUids.push(pool[idx].uid); pool.splice(idx, 1);
+    for (const h of Object.keys(remaining)) {
+      for (let k = 0; k < remaining[h]; k++) {
+        const idx = pool.findIndex(c => c.id === h);
+        if (idx < 0) { missing.push(h); continue; }
+        handUids.push(pool[idx].uid); pool.splice(idx, 1);
+      }
     }
     return { handUids, bottleUids, missing };
   }
@@ -1129,7 +1189,7 @@
           <span class="detail-tag ${asked.has(f.id) ? "tag-asked" : "tag-base"}">${asked.has(f.id) ? "出題" : "土台"}</span>
         </div>
         <div class="zk-fmeta">${f.no ? `<span class="zk-no">${f.no}番</span>` : ""}<span class="zk-theme">${themeShortOf(f.theme)}</span>${f.subgroup && subNameOf(f.subgroup) ? `<span class="zk-subgroup">${subNameOf(f.subgroup)}</span>` : ""}</div>
-        <div class="detail-herbs">${f.herbs.map(id => herbById[id].name).join("・")}<span class="detail-count">（${f.herbs.length}味）</span></div>
+        <div class="detail-herbs">${herbListText(f.herbs)}<span class="detail-count">（${sizeOf(f)}味）</span></div>
         ${f.note ? `<div class="zk-note">${f.note}</div>` : ""}
       </div>`;
     const renderFormulas = mode =>
@@ -1210,7 +1270,7 @@
                   <span class="detail-fname">${f.name}<span class="detail-fkana">${f.kana}</span></span>
                   <span class="detail-tag ${isAsked ? "tag-asked" : "tag-base"}">${isAsked ? "出題" : "土台"}</span>
                 </div>
-                <div class="detail-herbs">${f.herbs.map(id => herbById[id].name).join("・")}<span class="detail-count">（${f.herbs.length}味）</span></div>
+                <div class="detail-herbs">${herbListText(f.herbs)}<span class="detail-count">（${sizeOf(f)}味）</span></div>
               </div>`;
           }).join("")}
         </div>
@@ -1288,13 +1348,16 @@
       return;
     }
     state.currentSymptom = symptomById[state.symptomPile.pop()];
-    if (state.mode === "vs") return; // 対戦：ドロー/手番は beginTurn 側で（呼び出し元が先手を決める）
-    // ソロ：お題開始＝初手番。まず開幕を配り、少し間を置いて手番開始の+2
+    if (state.mode === "vs") return; // 対戦：ドロー/手番は beginTurn 側で（呼び出し元が revealRound で先手を決める）
+    // ソロ：お題を見せてから初手番。まず開幕を配り、少し間を置いて手番開始の+2
+    // 表示用のターン数はここで先に戻す（お披露目の裏でも「ターン1」と正しく見えるように）。
     state.roundTurn = 1;
     state.drewThisTurn = true;
-    const dealt = drawTo(Math.max(state.hand.length, CONFIG.handStart));
-    state.justDrawn = dealt;
-    scheduleStartDraw(dealt); // 配りで来た収穫も演出の対象にする
+    revealRound(() => {
+      const dealt = drawTo(Math.max(state.hand.length, CONFIG.handStart));
+      state.justDrawn = dealt;
+      scheduleStartDraw(dealt); // 配りで来た収穫も演出の対象にする
+    });
   }
 
   // 対戦：目隠し（交代）画面。相手に手札を見られないよう、渡してから表示する
@@ -1321,9 +1384,20 @@
   const bottleByUid = (uid) => state.shelf.find(b => b.uid === uid);
 
   // 調合エリアの生薬集合（手札の生薬 ＋ 薬瓶の中身）
+  // 調合エリアの選択から「もう存在しないもの」を取り除く。
+  // 選んだあとに手札・棚から消える経路がある（捨てた／補助カードを使った／薬瓶を壊された）ので、
+  // 描画の前に必ず掃除する。放っておくと存在しないカードを参照して画面が壊れる。
+  function prunePot() {
+    if (!state || !state.pot) return;
+    state.pot.hand = state.pot.hand.filter(uid => handByUid(uid));
+    state.pot.bottles = state.pot.bottles.filter(uid => bottleByUid(uid));
+  }
+
   function potHerbIds() {
-    const fromHand = state.pot.hand.map(uid => handByUid(uid).id);
-    const fromBottles = state.pot.bottles.flatMap(uid => bottleByUid(uid).herbs);
+    // 選んだあとに手札・棚から消えたもの（捨てた／使った／薬瓶を壊された）は無視する。
+    // 参照が残ったまま描画すると落ちるため、ここで必ず取りこぼす。
+    const fromHand = state.pot.hand.map(uid => handByUid(uid)).filter(Boolean).map(c => c.id);
+    const fromBottles = state.pot.bottles.map(uid => bottleByUid(uid)).filter(Boolean).flatMap(b => b.herbs);
     return [...fromHand, ...fromBottles];
   }
   function potFormula() {
@@ -1342,7 +1416,7 @@
   // この症状の「正解方剤」の味数（結果画面の満点計算に使う）
   function targetSizeOf(sym) {
     const f = formulaById[primaryFormulaId(sym)];
-    return f ? f.herbs.length : 0;
+    return f ? sizeOf(f) : 0;
   }
 
   // 調合エリアの中身を消費（手札・薬瓶から除去）
@@ -1398,6 +1472,9 @@
 
   // 汎用の確認ダイアログ（OKで onOk を実行）
   function confirmModal(messageHTML, okLabel, onOk) {
+    // 二重に開かせない。同じid（confirm-ok/cancel）の要素が2つできると、
+    // ボタンの取り違えが起きて確認ダイアログが機能しなくなる（ボタン連打で起こりうる）。
+    if (document.querySelector(".confirm-modal")) return;
     const overlay = document.createElement("div");
     overlay.className = "overlay";
     overlay.innerHTML = `
@@ -1562,7 +1639,7 @@
     if (!f) { flash("既知の方剤に一致しません。過不足を見直しましょう。", "warn"); return; }
     const match = state.currentSymptom.score[f.id] || 0;
     const bonus = match > 0 ? currentBonus() : 0;             // マッチ0なら早解き無効
-    const sizeBonus = match > 0 ? sizeBonusFor(f.herbs.length) : 0; // マッチ0なら薬味数ボーナスも無効
+    const sizeBonus = match > 0 ? sizeBonusFor(sizeOf(f)) : 0; // マッチ0なら薬味数ボーナスも無効
     const total = match + bonus + sizeBonus;
     state.score += total;
     // この回の満点＝証3＋早解き最大＋（正解方剤の薬味数ボーナス）
@@ -1580,21 +1657,67 @@
         const winner = state.active;
         nextRound();
         if (state.finished) { removeCpuThinking(); saveBoard(winner); render(); return; } // 終了画面ではカバーを外す
-        handoffTo(1 - winner);
+        // 次のお題を見せてから手番を渡す。CPUが先手のときも、人間が症状を読む前にCPUが動かない。
+        // ※「考え中」カバーはここでは外さない（外すと下のCPUの手札が一瞬見える）。
+        //   お披露目はカバーより上に出し、カバーは従来どおり handoffTo が人間の番で外す。
+        revealRound(() => handoffTo(1 - winner));
       });
       return;
     }
     showRoundResult(f, match, bonus, sizeBonus, total, () => { nextRound(); render(); });
   }
 
+  // ---- 詰み判定（このお題は、もう物理的に組めないか）--------------
+  // そのお題で点が入る方剤を、これから先ひとつでも組めるかを見る。
+  //   手に入りうる生薬＝手札＋山札＋薬瓶の中身（＋大収穫が残っていれば捨て札も山札に戻せる）。
+  //   収穫は山札から手札へ移すだけで総量は変わらないので、判定には影響しない。
+  //   カードは減る一方なので、一度「組めない」と確定したら後から覆らない。
+  function canStillScore(board, symptom) {
+    if (!symptom) return true;
+    const pool = [];
+    (board.hand || []).forEach(c => { if (!isAction(c.id)) pool.push(c.id); });
+    (board.deck || []).forEach(id => { if (!isAction(id)) pool.push(id); });
+    (board.shelf || []).forEach(b => { const f = formulaById[b.formulaId]; if (f) pool.push(...f.herbs); });
+    const bigLeft = (board.hand || []).some(c => c.id === "act:daishukaku")
+                 || (board.deck || []).some(id => id === "act:daishukaku");
+    if (bigLeft) (board.discard || []).forEach(id => { if (!isAction(id)) pool.push(id); });
+    const have = herbCounts(pool);
+    return Object.keys(symptom.score).some(fid => {
+      if (!(symptom.score[fid] > 0)) return false;      // 0点の方剤を作れても「解けた」ではない
+      const f = formulaById[fid];
+      if (!f) return false;
+      const need = herbCounts(f.herbs);                 // 量（芍薬×2など）も枚数で見る
+      return Object.keys(need).every(h => (have[h] || 0) >= need[h]);
+    });
+  }
+  // 詰みの出口（パス）を出してよいか。
+  //   自習：自分が組めないと確定したとき＝進めなくなるのを防ぐ。
+  //   対戦：両者とも組めないと確定したときだけ。相手がまだ組めるならボタンは出ない
+  //         ＝「相手の大量得点を止めるために流す」という妨害が原理的にできなくなる。
+  //   me = 自分（アクティブ盤）が組めない／opp = 相手が組めない／vs = 対戦かどうか
+  function stuckInfo() {
+    if (!state || state.finished || !state.currentSymptom) return { me: false, opp: false, vs: false };
+    const s = state.currentSymptom;
+    const me = !canStillScore(state, s);
+    if (state.mode !== "vs" || !state.players) return { me, opp: false, vs: false }; // 自習は自分だけで判断
+    return { me, opp: !canStillScore(state.players[1 - state.active], s), vs: true };
+  }
+  function roundIsDead() {
+    const i = stuckInfo();
+    return i.vs ? (i.me && i.opp) : i.me;
+  }
+
   // このお題を見送る（ソロ=0点で次へ／対戦=両者スキップで次のお題へ）
+  // ※ 呼べるのは roundIsDead()＝もう組めないと確定したときだけ。
+  //    「難しいお題を捨てて次の準備に使う」戦術に使われないよう、判断ではなく出口として置く。
   function passRound() {
     if (state.finished || !state.currentSymptom) return;
+    if (!roundIsDead()) { flash("このお題はまだ組める見込みがあります。", "warn"); return; }
     if (state.mode === "vs") {
       const other = 1 - state.active;
       nextRound();
       if (state.finished) { saveBoard(state.active); render(); return; }
-      handoffTo(other); // 相手が次のお題の先手
+      revealRound(() => handoffTo(other)); // お題を見せてから、相手が次のお題の先手
       return;
     }
     state.log.push({
@@ -1659,12 +1782,13 @@
         <div class="bottle-cap"></div>
         <div class="bottle-name">${f.name}</div>
         <div class="bottle-kana">${f.kana}</div>
-        <div class="bottle-herbs">${bottle.herbs.map(id => herbById[id].name).join("・")}</div>
+        <div class="bottle-herbs">${herbListText(bottle.herbs)}</div>
       </div>`;
   }
 
   function render() {
     const app = $("#app");
+    prunePot(); // 消えたカードの選択が残っていたら先に取り除く
 
     if (state.finished) {
       app.innerHTML = state.mode === "vs" ? vsResultScreenHTML() : resultScreenHTML();
@@ -1704,7 +1828,7 @@
     const detection = potEmpty
       ? `<span class="pot-empty">手札の生薬や棚の薬瓶を選んで、方剤を組み立てましょう</span>`
       : pf
-        ? `<span class="pot-ok">✓ <b>${pf.name}</b> が成立（${pf.herbs.length}味${sizeBonusFor(pf.herbs.length) > 0 ? `・薬味数ボーナス+${sizeBonusFor(pf.herbs.length)}` : ""}）</span>`
+        ? `<span class="pot-ok">✓ <b>${pf.name}</b> が成立（${sizeOf(pf)}味${sizeBonusFor(sizeOf(pf)) > 0 ? `・薬味数ボーナス+${sizeBonusFor(sizeOf(pf))}` : ""}）</span>`
         : `<span class="pot-ng">未成立：${uniq(potIds).length}種 — 既知の方剤に一致しません（過不足に注意）</span>`;
 
     app.innerHTML = `
@@ -1743,7 +1867,7 @@
           <div class="hint-box">
             <p>💡 ${s.hint}</p>
             <p class="hint-answer">想定処方：<b>${targetFormula.name}</b>（${targetFormula.kana}）<br>
-            構成生薬：${targetFormula.herbs.map(id => herbById[id].name).join("・")}</p>
+            構成生薬：${herbListText(targetFormula.herbs)}</p>
           </div>` : ""}
       </section>
 
@@ -1786,7 +1910,17 @@
           ${state.hand.length > CONFIG.handSoft ? "disabled" : ""}>
           ターンを終える（次の手番へ・自動で+2枚・早解き -1）
         </button>
-        <button id="pass-btn" class="ghost-btn danger">${state.mode === "vs" ? "このお題を流す（両者0点で次へ）" : "このお題を見送る（0点）"}</button>
+        ${(() => {
+          // 自分が組めるうちは何も出さない。
+          // 対戦で自分だけ組めないときは「押せない案内」＝相手はまだ解けるので流させない。
+          // 両者（自習なら自分）が組めないときだけ、押せる出口ボタンを出す。
+          const i = stuckInfo();
+          if (!i.me) return "";
+          if (i.vs && !i.opp) return `<div class="pass-note">証に合う方剤を組むのに<br>必要な生薬カードが足りません</div>`;
+          return `<button id="pass-btn" class="ghost-btn danger">${i.vs
+            ? "両者ともに証に合う方剤が組めません<br>（両者0点で次のお題へ）"
+            : "証に合う方剤が組めません<br>（0点で次のお題へ）"}</button>`;
+        })()}
       </section>
 
       <section class="hand-area">
@@ -1838,7 +1972,14 @@
     $("#clear-btn").addEventListener("click", () => { state.pot = { hand: [], bottles: [] }; render(); });
     { const dp = $("#discard-pile"); if (dp) dp.addEventListener("click", openDiscardView); }
     $("#end-turn-btn").addEventListener("click", endTurn);
-    $("#pass-btn").addEventListener("click", passRound);
+    // 詰みのときだけ出るボタン。取り消せないので確認を挟む。
+    if ($("#pass-btn")) $("#pass-btn").addEventListener("click", () => {
+      confirmModal(
+        state.mode === "vs"
+          ? "<b>両者ともに証に合う方剤が組めません。</b><br>どちらの手札・山札・薬瓶にも、必要な生薬が残っていません。両者0点のまま次のお題へ進みます。"
+          : "<b>証に合う方剤が組めません。</b><br>手札・山札・薬瓶に、必要な生薬が残っていません。0点のまま次のお題へ進みます。",
+        "次のお題へ進む", passRound);
+    });
     $("#hint-btn").addEventListener("click", toggleHint);
   }
 
@@ -1857,15 +1998,20 @@
     overlay.className = "overlay";
     const gradeClass = match === 3 ? "grade-3" : match === 2 ? "grade-2" : match === 1 ? "grade-1" : "grade-0";
     const whoHTML = state.mode === "vs" ? `<div class="result-who">${state.playerNames[state.active]} が獲得！</div>` : "";
+    // どのお題に対して出したのかを添える。CPUが一手で決めたとき「何が起こった？」にならないように、
+    // 「この症状に、この方剤を出した」がひと目でつながるようにする。
+    const symHTML = state.currentSymptom
+      ? `<div class="result-symptom"><span>このお題</span>${state.currentSymptom.text}</div>` : "";
     overlay.innerHTML = `
       <div class="result-modal ${gradeClass}">
+        ${symHTML}
         ${whoHTML}
         <div class="result-formula">${formula.name}<span>${formula.kana}</span></div>
         <div class="result-grade">${matchLabel[match]}</div>
         <div class="result-score-break">
           <span>症状マッチ <b>+${match}</b></span>
           <span>早解き <b>+${bonus}</b></span>
-          <span>薬味数（${formula.herbs.length}味） <b>+${sizeBonus}</b></span>
+          <span>薬味数（${sizeOf(formula)}味） <b>+${sizeBonus}</b></span>
         </div>
         <div class="result-points">合計 +${total}<span>点</span></div>
         <p class="result-note">${formula.note || ""}</p>
