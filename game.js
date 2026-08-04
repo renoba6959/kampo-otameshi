@@ -1841,6 +1841,7 @@
           <span class="stat stat-deck ${justDrew ? "deck-pulse" : ""}">山札 <b>${state.deck.length}</b></span>
           <span class="stat">捨て札 <b>${state.discard.length}</b></span>
         </div>
+        <button type="button" id="quit-btn" class="quit-btn" title="ゲームをとちゅうで終わりにして、最初の画面にもどります">とちゅうでやめる</button>
       </header>
 
       ${state.mode === "vs" ? `
@@ -1972,6 +1973,18 @@
     $("#clear-btn").addEventListener("click", () => { state.pot = { hand: [], bottles: [] }; render(); });
     { const dp = $("#discard-pile"); if (dp) dp.addEventListener("click", openDiscardView); }
     $("#end-turn-btn").addEventListener("click", endTurn);
+    // とちゅうでやめる：うっかり押して進行中のゲームが消えないよう、必ず確認を挟む。
+    //   実行はページの読み込み直し。CPUの思考タイマー（setTimeout）が生き残って
+    //   スタート画面を壊すのを確実に防ぐため（タイマーIDを保持していないので止められない）。
+    $("#quit-btn").addEventListener("click", () => {
+      const lost = state.mode === "vs"
+        ? `ここまでの得点（${state.playerNames[0]} ${scoreOf(0)}点・${state.playerNames[1]} ${scoreOf(1)}点）は消えます。`
+        : `ここまでの得点（${state.score}点）は消えます。`;
+      confirmModal(
+        `<b>ゲームをとちゅうで終わりにして、最初の画面にもどりますか？</b><br>${lost}`,
+        "最初にもどる", () => location.reload()
+      );
+    });
     // 詰みのときだけ出るボタン。取り消せないので確認を挟む。
     if ($("#pass-btn")) $("#pass-btn").addEventListener("click", () => {
       confirmModal(
