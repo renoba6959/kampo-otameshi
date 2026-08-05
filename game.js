@@ -333,6 +333,49 @@
   const isCpuPlayer = (i) => !!(state.players && state.players[i] && state.players[i].isCpu);
   const hasCpu = () => !!(state.players && state.players.some(p => p && p.isCpu));
 
+  // ---- 学びの記録 ------------------------------------------------
+  //   方剤を組めた回数を数える。ねらいは「何回やったか」より
+  //   **まだ一度も組んでいない方剤が見えること**＝復習していない場所が分かること。
+  //   サーバーを持たないので、この端末のブラウザの中だけに残り、どこにも送信されない。
+  //   ブラウザの履歴／サイトデータを消すと一緒に消える（図鑑にその旨を明記している）。
+  const RECORD_KEY = "kampo_record_v1";
+  // localStorage は環境によっては触っただけで例外を投げる（プライベートモード・file:// 制限など）。
+  // 記録は「あると嬉しい」ものでゲームの根幹ではないため、失敗しても黙って諦め、進行は止めない。
+  function loadRecord() {
+    try {
+      const r = JSON.parse(localStorage.getItem(RECORD_KEY) || "null");
+      return (r && typeof r === "object" && r.formulas) ? r : { formulas: {} };
+    } catch (e) { return { formulas: {} }; }
+  }
+  function saveRecord(r) {
+    try { localStorage.setItem(RECORD_KEY, JSON.stringify(r)); } catch (e) {}
+  }
+  function clearRecord() {
+    try { localStorage.removeItem(RECORD_KEY); } catch (e) {}
+  }
+  // 数えるのは「人が自分で組んだとき」だけ。
+  //   自習＝つねに本人。CPU対戦＝人間の手番だけ（CPUが組んだ分は本人の復習ではない）。
+  //   2人対戦＝同じ端末を交代で使うので、どちらが本人か判別できない ＝ 記録しない。
+  function shouldRecordPlay() {
+    if (!state) return false;
+    if (state.mode !== "vs") return true;
+    return hasCpu() && !isCpuPlayer(state.active);
+  }
+  // 薬瓶にした方剤を、何も足さずにそのまま出しただけか。
+  //   薬瓶に確保した時点ですでに数えているので、ここで数えると1回組んだものが2回になる。
+  //   （例：黄連解毒湯を薬瓶にしてからお題に提出＝組んだのは1回）
+  function potIsUntouchedBottle(f) {
+    if (!state.pot || state.pot.hand.length !== 0 || state.pot.bottles.length !== 1) return false;
+    const b = (state.shelf || []).find(x => x.uid === state.pot.bottles[0]);
+    return !!(b && b.formulaId === f.id);
+  }
+  function recordFormula(id) {
+    if (!id || !shouldRecordPlay()) return;
+    const r = loadRecord();
+    r.formulas[id] = (r.formulas[id] || 0) + 1;
+    saveRecord(r);
+  }
+
   // 現在の盤を退避して、next の手番を始める
   function handoffTo(next) {
     saveBoard(state.active);
@@ -1171,29 +1214,39 @@
     const themeShortOf = id => ((themes.find(t => t.id === id) || {}).name || id).replace(/（.*/, "");
     const subNameOf  = id => (subgroups.find(b => b.id === id) || {}).name || "";
     const asked = new Set(symptoms.map(primaryFormulaId));   // お題として問われる方剤
+    // 学びの記録。開いた時点で1回だけ読む（「記録を消す」を押したら差し替えて描き直す）
+    let rec = loadRecord().formulas;
+    let sortMode = "kana";
+    const madeCount = () => formulas.filter(f => rec[f.id] > 0).length;
 
     // 並び替え用の比較関数
-    const kanaCmp = (a, b) => a.kana.localeCompare(b.kana, "ja");   // あいうえお順（読み仮名）
+    const kanaCmp = (a, b) => a.kana.localeCompare(b.kana, "ja");   // 五十音順（読み仮名）
     const noCmp = (a, b) => {                                        // 番号順（ツムラ番号。番号なしは末尾）
       if (a.no == null && b.no == null) return kanaCmp(a, b);
       if (a.no == null) return 1;
       if (b.no == null) return -1;
       return a.no - b.no;
     };
+    // 組んだ回数の多い順。まだ組んでいない方剤は自然に末尾へ集まる＝復習の宿題が一箇所に並ぶ。
+    const madeCmp = (a, b) => {
+      const na = rec[a.id] || 0, nb = rec[b.id] || 0;
+      return na === nb ? kanaCmp(a, b) : nb - na;   // 同じ回数どうしは五十音順
+    };
 
     // 方剤カード（テーマの小ラベル・番号・病位つき）
     const formulaCard = f => `
-      <div class="detail-formula">
+      <div class="detail-formula${rec[f.id] > 0 ? "" : " zk-unmade"}">
         <div class="detail-fhead">
           <span class="detail-fname">${f.name}<span class="detail-fkana">${f.kana}</span></span>
           <span class="detail-tag ${asked.has(f.id) ? "tag-asked" : "tag-base"}">${asked.has(f.id) ? "出題" : "土台"}</span>
         </div>
+        <div class="zk-made ${rec[f.id] > 0 ? "zk-made-on" : ""}">${rec[f.id] > 0 ? `✅ ${rec[f.id]}回 組んだ` : "まだ組んでいない"}</div>
         <div class="zk-fmeta">${f.no ? `<span class="zk-no">${f.no}番</span>` : ""}<span class="zk-theme">${themeShortOf(f.theme)}</span>${f.subgroup && subNameOf(f.subgroup) ? `<span class="zk-subgroup">${subNameOf(f.subgroup)}</span>` : ""}</div>
         <div class="detail-herbs">${herbListText(f.herbs)}<span class="detail-count">（${sizeOf(f)}味）</span></div>
         ${f.note ? `<div class="zk-note">${f.note}</div>` : ""}
       </div>`;
     const renderFormulas = mode =>
-      formulas.slice().sort(mode === "no" ? noCmp : kanaCmp).map(formulaCard).join("");
+      formulas.slice().sort(mode === "no" ? noCmp : mode === "made" ? madeCmp : kanaCmp).map(formulaCard).join("");
 
     // 生薬：あいうえお順のカードグリッド（寒熱で色分け）
     const herbCard = h => `
@@ -1217,10 +1270,18 @@
         <div class="zk-panel" data-panel="formula">
           <div class="zk-sort">
             <span class="zk-sort-label">並び順</span>
-            <button type="button" class="zk-sort-btn selected" data-sort="kana">あいうえお順</button>
+            <button type="button" class="zk-sort-btn selected" data-sort="kana">五十音順</button>
             <button type="button" class="zk-sort-btn" data-sort="no">番号順</button>
+            <button type="button" class="zk-sort-btn" data-sort="made">組んだ回数順</button>
           </div>
-          <div class="detail-list" id="zk-formula-list">${renderFormulas("kana")}</div>
+          <div class="zk-record">
+            <div class="zk-record-head">
+              <span class="zk-record-count">組んだことがある方剤 <b id="zk-made-count">${madeCount()}</b> / ${formulas.length}</span>
+              <button type="button" id="zk-record-clear" class="zk-record-clear">記録を消す</button>
+            </div>
+            <p class="zk-record-note">記録はこの端末のブラウザの中だけに残ります（どこにも送られません）。ブラウザの履歴やサイトデータを消すと、この記録も消えます。</p>
+          </div>
+          <div class="detail-list" id="zk-formula-list">${renderFormulas(sortMode)}</div>
         </div>
         <div class="zk-panel zk-hidden" data-panel="herb">
           <div class="zk-herb-grid">${herbSection}</div>
@@ -1234,8 +1295,21 @@
     }));
     overlay.querySelectorAll(".zk-sort-btn").forEach(btn => btn.addEventListener("click", () => {
       overlay.querySelectorAll(".zk-sort-btn").forEach(x => x.classList.toggle("selected", x === btn));
-      overlay.querySelector("#zk-formula-list").innerHTML = renderFormulas(btn.dataset.sort);
+      sortMode = btn.dataset.sort;
+      overlay.querySelector("#zk-formula-list").innerHTML = renderFormulas(sortMode);
     }));
+    // 記録を消す：取り消せないので必ず確認を挟む（並び順は保ったまま描き直す）
+    overlay.querySelector("#zk-record-clear").addEventListener("click", () => {
+      confirmModal(
+        "<b>学びの記録を消しますか？</b><br>どの方剤を何回組んだかの記録が、すべて消えます。元にはもどせません。",
+        "記録を消す", () => {
+          clearRecord();
+          rec = {};
+          overlay.querySelector("#zk-formula-list").innerHTML = renderFormulas(sortMode);
+          overlay.querySelector("#zk-made-count").textContent = "0";
+        }
+      );
+    });
     overlay.querySelector(".detail-close").addEventListener("click", () => overlay.remove());
     overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
   }
@@ -1626,8 +1700,13 @@
   function bottlePot() {
     const f = potFormula();
     if (!f) { flash("この組み合わせは既知の方剤に一致しません。", "warn"); return; }
+    // 数えるかどうかは、瓶を消費する前に決める（consumePot 後は判定材料が消える）。
+    // 同じ薬瓶を選んで押し直しただけなら中身は変わらないので数えない。
+    const again = potIsUntouchedBottle(f);
     consumePot();
     state.shelf.push({ uid: state.nextUid++, formulaId: f.id, herbs: f.herbs.slice() });
+    // 薬瓶に確保するのも「組めた」＝土台の方剤（桂枝湯など）はここでしか記録されない
+    if (!again) recordFormula(f.id);
     flash(`「${f.name}」を薬瓶に確保しました。`, "ok");
     render();
   }
@@ -1637,6 +1716,9 @@
     if (state.finished || !state.currentSymptom) return;
     const f = potFormula();
     if (!f) { flash("既知の方剤に一致しません。過不足を見直しましょう。", "warn"); return; }
+    // 点にならなくても「組めた」ことは記録する（部分点・お題違いも復習のうち）。
+    // ただし薬瓶をそのまま出しただけなら、確保したときに数えているので重ねない。
+    if (!potIsUntouchedBottle(f)) recordFormula(f.id);
     const match = state.currentSymptom.score[f.id] || 0;
     const bonus = match > 0 ? currentBonus() : 0;             // マッチ0なら早解き無効
     const sizeBonus = match > 0 ? sizeBonusFor(sizeOf(f)) : 0; // マッチ0なら薬味数ボーナスも無効

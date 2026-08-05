@@ -813,7 +813,8 @@ body::before {
 }
 .zk-tab.selected { color: #fff; background: var(--accent); border-color: var(--accent); }
 .zk-panel.zk-hidden { display: none; }
-.zk-sort { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; }
+/* 並び替えは3つになったので、狭い画面では折り返す（はみ出して押せなくなるのを防ぐ） */
+.zk-sort { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 12px; }
 .zk-sort-label { font-size: 12px; color: var(--ink-soft); margin-right: 2px; }
 .zk-sort-btn {
   font-size: 12px; font-weight: 700; color: var(--ink-soft);
@@ -826,6 +827,25 @@ body::before {
 .zk-no { font-size: 11px; font-weight: 700; color: var(--accent-2); background: #f0f5f0; border-radius: 6px; padding: 1px 8px; }
 .zk-subgroup { font-size: 11px; font-weight: 700; color: var(--accent); background: #fbf1e6; border-radius: 6px; padding: 1px 8px; }
 .zk-note { font-size: 12px; color: var(--ink-soft); line-height: 1.5; margin-top: 6px; }
+/* ---- 学びの記録（図鑑の中）---- */
+/* まだ組んでいない方剤は淡くする。「どこを復習していないか」が一目で分かることが目的。 */
+.zk-unmade { background: #faf8f3; border-style: dashed; }
+.zk-made { font-size: 12px; font-weight: 700; color: var(--ink-soft); margin-top: 4px; }
+.zk-made-on { color: var(--accent-2); }
+.zk-record {
+  border: 1px solid var(--line); border-radius: 10px;
+  background: #fbf9f3; padding: 8px 12px; margin-bottom: 12px;
+}
+.zk-record-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.zk-record-count { font-size: 13px; color: var(--ink); }
+.zk-record-count b { font-size: 16px; color: var(--accent); }
+.zk-record-clear {
+  font-family: inherit; font-size: 11px; color: var(--muted); flex: none;
+  background: #fff; border: 1px solid var(--line); border-radius: 8px;
+  padding: 4px 10px; cursor: pointer; white-space: nowrap;
+}
+.zk-record-clear:hover { color: var(--ink); border-color: var(--muted); }
+.zk-record-note { font-size: 11px; color: var(--ink-soft); line-height: 1.5; margin-top: 5px; }
 /* 生薬グリッド */
 .zk-herb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
 .zk-herb {
