@@ -609,6 +609,15 @@ body::before {
 .cpu-level-btn:hover { border-color: var(--accent); }
 .cpu-level-btn.selected { color: #fff; background: var(--accent); border-color: var(--accent); }
 .cpu-level-note { font-size: 12px; color: var(--ink-soft); margin: 6px 0 0; }
+/* 強さ別のこれまでの成績（学びの記録）。強さを選ぶその場で見えるように、すぐ下に置く。 */
+.cpu-record {
+  margin-top: 10px; padding: 8px 12px; text-align: left;
+  background: #fbf9f3; border: 1px solid var(--line); border-radius: 10px;
+}
+.cpu-record-title { display: block; font-size: 11px; font-weight: 700; color: var(--ink-soft); margin-bottom: 4px; }
+.cpu-record-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 12px; }
+.cpu-record-name { font-weight: 700; color: var(--ink); flex: none; }
+.cpu-record-val { color: var(--ink-soft); text-align: right; }
 .mode-note { font-size: 12px; color: var(--ink-soft); text-align: center; margin: 6px 0 12px; }
 .vs-setup-hint {
   font-size: 13px; color: var(--ink); text-align: center; line-height: 1.6;

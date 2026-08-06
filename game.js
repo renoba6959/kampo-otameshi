@@ -344,8 +344,10 @@
   function loadRecord() {
     try {
       const r = JSON.parse(localStorage.getItem(RECORD_KEY) || "null");
-      return (r && typeof r === "object" && r.formulas) ? r : { formulas: {} };
-    } catch (e) { return { formulas: {} }; }
+      // 古い記録には cpu が無いので、欠けている側を補って返す（片方だけ消えるのを防ぐ）
+      if (r && typeof r === "object") return { formulas: r.formulas || {}, cpu: r.cpu || {} };
+    } catch (e) {}
+    return { formulas: {}, cpu: {} };
   }
   function saveRecord(r) {
     try { localStorage.setItem(RECORD_KEY, JSON.stringify(r)); } catch (e) {}
@@ -374,6 +376,44 @@
     const r = loadRecord();
     r.formulas[id] = (r.formulas[id] || 0) + 1;
     saveRecord(r);
+  }
+  // CPU対戦の勝敗を、強さ別に1回だけ記録する。
+  //   結果画面は再描画されうるので、state に印を付けて二重に数えない。
+  //   winner は勝った側の番号（引き分けは null）。2人対戦（CPUなし）は記録しない。
+  function recordCpuResult(winner) {
+    if (!state || state.cpuResultRecorded || !hasCpu()) return;
+    const me = state.players.findIndex(p => p && !p.isCpu);
+    if (me < 0) return;                      // 人間がいない＝記録する相手がいない
+    state.cpuResultRecorded = true;
+    const level = state.cpuLevel || "normal";
+    const r = loadRecord();
+    const c = r.cpu[level] || { win: 0, lose: 0, draw: 0 };
+    if (winner === null) c.draw += 1;
+    else if (winner === me) c.win += 1;
+    else c.lose += 1;
+    r.cpu[level] = c;
+    saveRecord(r);
+  }
+  // 「5戦 3勝1敗1分（勝率60%）」の形にする。0戦のときは、そう分かる文言を返す。
+  function cpuRecordText(c) {
+    const n = c ? (c.win || 0) + (c.lose || 0) + (c.draw || 0) : 0;
+    if (n === 0) return "まだ対戦していません";
+    const pct = Math.round((c.win / n) * 100);
+    return `${n}戦 ${c.win}勝${c.lose}敗${c.draw ? c.draw + "分" : ""}（勝率${pct}%）`;
+  }
+  // 強さを選ぶ場面に、そのまま成績を並べる（選ぶときに見えるのがいちばん役に立つ）
+  const CPU_LEVELS = [["easy", "やさしい"], ["normal", "ふつう"], ["hard", "つよい"]];
+  function cpuRecordHTML() {
+    const cpu = loadRecord().cpu;
+    return `
+      <div class="cpu-record">
+        <span class="cpu-record-title">これまでの成績</span>
+        ${CPU_LEVELS.map(([id, name]) => `
+          <div class="cpu-record-row">
+            <span class="cpu-record-name">${name}</span>
+            <span class="cpu-record-val">${cpuRecordText(cpu[id])}</span>
+          </div>`).join("")}
+      </div>`;
   }
 
   // 現在の盤を退避して、next の手番を始める
@@ -980,6 +1020,7 @@
             <button type="button" class="cpu-level-btn ${selectedCpuLevel === "hard" ? "selected" : ""}" data-level="hard">つよい</button>
           </div>
           <p class="cpu-level-note">${cpuLevelNote(selectedCpuLevel)}</p>
+          ${cpuRecordHTML()}
         </div>` : ""}
         <p class="start-lead">今回あそぶ<b>テーマ</b>を選んでください。選んだテーマの症状だけが出て、
           デッキもそのテーマに必要な生薬だけで組まれます。<br>
@@ -1301,12 +1342,15 @@
     // 記録を消す：取り消せないので必ず確認を挟む（並び順は保ったまま描き直す）
     overlay.querySelector("#zk-record-clear").addEventListener("click", () => {
       confirmModal(
-        "<b>学びの記録を消しますか？</b><br>どの方剤を何回組んだかの記録が、すべて消えます。元にはもどせません。",
+        "<b>学びの記録を消しますか？</b><br>どの方剤を何回組んだか・CPUとの対戦成績が、すべて消えます。元にはもどせません。",
         "記録を消す", () => {
           clearRecord();
           rec = {};
           overlay.querySelector("#zk-formula-list").innerHTML = renderFormulas(sortMode);
           overlay.querySelector("#zk-made-count").textContent = "0";
+          // 図鑑の裏にあるスタート画面のCPU成績も、その場で描き直す（古い数字が残らないように）
+          const cr = document.querySelector(".cpu-record");
+          if (cr) cr.outerHTML = cpuRecordHTML();
         }
       );
     });
@@ -2125,6 +2169,7 @@
   function vsResultScreenHTML() {
     const s0 = state.players[0].score, s1 = state.players[1].score;
     const winner = s0 === s1 ? null : (s0 > s1 ? 0 : 1);
+    recordCpuResult(winner); // CPU戦の勝敗はここで確定。中で1回だけ記録するよう見張っている
     const title = winner === null ? "引き分け！" : `🏆 ${state.playerNames[winner]} の勝ち！`;
     return `
       <div class="result-modal vs-result grade-${winner === null ? 0 : 3}">
