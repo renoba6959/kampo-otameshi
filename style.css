@@ -747,11 +747,15 @@ body::before {
 .rounds-name { display: flex; flex-direction: column; gap: 2px; }
 .rounds-title { font-size: 15px; font-weight: 800; color: var(--accent); }
 .rounds-desc { font-size: 11px; font-weight: 400; color: var(--ink-soft); line-height: 1.4; }
-.rounds-step {
+/* 生薬の種類でしばる：入／切のスイッチと、切のときの±（押せないことを見た目で示す） */
+.species-toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.species-toggle input { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+.de-stepper.stepper-off { opacity: .35; pointer-events: none; }
+.rounds-step, .species-step {
   width: 30px; height: 30px; border-radius: 8px; font-size: 18px; line-height: 1;
   background: #fff; border: 1px solid var(--line); color: var(--accent-2); cursor: pointer;
 }
-.rounds-step:hover { border-color: var(--accent-2); background: #f0f5f0; }
+.rounds-step:hover, .species-step:hover { border-color: var(--accent-2); background: #f0f5f0; }
 .de-section-title {
   display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;
   font-size: 13px; font-weight: 700; color: var(--accent-2);

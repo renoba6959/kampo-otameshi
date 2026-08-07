@@ -29,11 +29,21 @@
     harvestPick: 5,     // 「収穫カード」で山札から指名できる生薬の最大数（調整可）
     harvestCardCopies: 3, // デッキに入れる「収穫カード」の既定枚数（デッキ編集の初期値）
     bigHarvestCardCopies: 2, // デッキに入れる「大収穫カード」の既定枚数（デッキ編集の初期値）
+    shinnoPick: 5,           // 「神農本草経」で山札に加えられる生薬の枚数
+    shinnoCardCopies: 1,     // デッキに入れる「神農本草経」の既定枚数（デッキ編集の初期値）
     jamaCardCopies: 1,       // 対戦：デッキに入れる「お邪魔カード（招かれざる客）」の既定枚数
     visitorCost: 2,          // 「静かなる来訪者」を使うときに支払う得点（説明文に出すので お試し版にも残る）
     turnDrawDelayMs: 1200,   // 手番開始の自動ドロー(+2)を、配り/切替の少しあとに出す間（ms）
     deckCardMax: 3,     // デッキ編集で補助カードを入れられる上限（各種類）
     herbMax: 9,         // デッキ編集で生薬を入れられる上限（各種類。0にすると外せる）
+    // 「生薬の種類でしばる」設定。お題に出す方剤を、生薬の種類数がこの数に収まる範囲に限る。
+    //   生薬の近い方剤（＝類方）が自然と集まり、山札が薄くなって組みやすくなる。
+    //   null＝しばらない（今までどおり、テーマの方剤ぜんぶ）。
+    speciesLimit: null,
+    speciesDefault: 10, // スイッチを入れたときの初期値（実測：かぜテーマで完成率 約95%）
+    speciesMin: 10,     // しばるときに選べる下限（これ未満だとお題が足りなくなる）
+    speciesMax: 30,     // 　　　　　　　　　　上限
+    speciesStep: 2,     // ±ボタンで動く幅
     // この版では使えない補助カード（デッキ編集のキー名で指定。例：["visitor"]）。
     //   お試し版用。名前と説明は出るが 0枚固定で増やせない＝「そういうカードがあるんだ」だけ伝える“皮”。
     //   ※皮だけにする本体は、ビルド時に処理コードを丸ごと物理削除すること（build/build-trial.js 参照）。
@@ -69,7 +79,8 @@
   const isAction = (id) => typeof id === "string" && id.startsWith("act:");
 
   // デッキ編集で選んだ枚数（スタート画面で調整）。herbs は { 生薬id: 枚数 }
-  let deckPrefs = { harvest: CONFIG.harvestCardCopies, daishukaku: CONFIG.bigHarvestCardCopies, herbs: {} };
+  let deckPrefs = { harvest: CONFIG.harvestCardCopies, daishukaku: CONFIG.bigHarvestCardCopies,
+                    shinno: CONFIG.shinnoCardCopies, herbs: {} };
   const ROUNDS_MIN = 3;                       // お題数の下限（±で選べる範囲。上限は CONFIG.maxRounds＝10）
   const ROUNDS_DEFAULT = 5;                   // お題数の既定（少なめ＝方剤を組みやすい。プレイヤーは±で変更可）
   let selectedRounds = ROUNDS_DEFAULT;        // 1ゲームのお題数（実際はテーマの症状数で頭打ち）
@@ -123,11 +134,77 @@
   const primaryFormulaId = (sym) =>
     Object.entries(sym.score).sort((a, b) => b[1] - a[1])[0][0];
 
+  // ---- 生薬の種類でしばる ------------------------------------------
+  // 症状カード（お題）を持つ方剤か。逍遙散のような「土台専用」の方剤は出題されない。
+  const hasSymptom = new Set(symptoms.map(primaryFormulaId));
+  // 今回の顔ぶれ（しぼった方剤id）を覚えておく置き場。
+  //   同じ設定のあいだは同じ顔ぶれを返す＝デッキ編集で見えている生薬と、本番の山札がズレない。
+  let speciesPick = { key: "", ids: null };
+  // 生薬の種類数の上限（プレイヤーが選んだ値。null＝しばらない）
+  let speciesLimit = CONFIG.speciesLimit;
+  // スイッチを切っているあいだも、選んでいた数は覚えておく（入れ直したとき元に戻すため）
+  let speciesValue = CONFIG.speciesLimit || CONFIG.speciesDefault;
+  // 顔ぶれを選び直す。スタート画面に戻るたびに呼び、毎回ちがう組み合わせで遊べるようにする。
+  function resetSpeciesPick() { speciesPick = { key: "", ids: null }; }
+
+  // 「生薬の種類数」を予算として、そこに収まるだけ方剤を集める。
+  //   起点をひとつ無作為に選び、あとは「新しく増える生薬がいちばん少ない方剤」を足していく。
+  //   生薬が近い方剤＝類方なので、桂枝湯の仲間・麻黄湯の仲間、というまとまりが自然にできる。
+  //   want＝ほしいお題の数。起点によっては お題になる方剤が足りない顔ぶれになるので、
+  //   起点を順に試して「お題が足りるもの」を採る（どれも足りなければ いちばん多いものを採る）。
+  function pickByLimit(pool, budget, want) {
+    // 単体で予算を超える方剤（薬味数が多すぎる）は起点にできない
+    const seeds = shuffle(pool.filter(f => new Set(f.herbs).size <= budget));
+    if (seeds.length === 0) return pool.slice();   // どれも入らないときは しぼらない
+    let best = null;
+    for (const seed of seeds) {
+      const chosen = growFrom(pool, seed, budget);
+      const q = chosen.filter(f => hasSymptom.has(f.id)).length;
+      if (!best || q > best.q) best = { chosen, q };
+      if (q >= want) return chosen;
+    }
+    return best.chosen;
+  }
+
+  // 起点をひとつ決めて、予算いっぱいまで方剤を足す
+  function growFrom(pool, seed, budget) {
+    const set = new Set(seed.herbs);
+    const chosen = [seed];
+    while (true) {
+      let best = null, bestAdd = Infinity;
+      for (const f of pool) {
+        if (chosen.includes(f)) continue;
+        // 増える生薬は「種類」で数える（芍薬×2 は1種類）
+        const add = new Set(f.herbs.filter(h => !set.has(h))).size;
+        // 同点なら お題になる方剤を優先（土台専用ばかり集めても お題は増えないため）
+        const better = add < bestAdd ||
+          (add === bestAdd && best && !hasSymptom.has(best.id) && hasSymptom.has(f.id));
+        if (better) { bestAdd = add; best = f; }
+      }
+      if (!best || set.size + bestAdd > budget) break;
+      best.herbs.forEach(h => set.add(h));
+      chosen.push(best);
+    }
+    return chosen;
+  }
+
+
   // 選んだテーマ集合から、使う方剤・症状・生薬を導く
   function themeSelection(themeIds) {
     const set = new Set(themeIds);
     // 選んだトークンは「テーマid」でも「サブグループid」でもよい。どちらかに一致した方剤を集める。
-    const activeFormulas = formulas.filter(f => set.has(f.theme) || (f.subgroup && set.has(f.subgroup)));
+    let activeFormulas = formulas.filter(f => set.has(f.theme) || (f.subgroup && set.has(f.subgroup)));
+    // 生薬の種類でしばる設定なら、ここで顔ぶれをしぼる（テストフック KAMPO_SPECIES_LIMIT が最優先）
+    const limit = Number.isFinite(window.KAMPO_SPECIES_LIMIT) ? window.KAMPO_SPECIES_LIMIT : speciesLimit;
+    if (limit && activeFormulas.length) {
+      // お題数も鍵に含める（ほしいお題の数が変われば、顔ぶれも選び直す必要があるため）
+      const key = themeIds.slice().sort().join(",") + "|" + limit + "|" + selectedRounds;
+      if (speciesPick.key !== key || !speciesPick.ids) {
+        const want = Math.min(selectedRounds, CONFIG.maxRounds);
+        speciesPick = { key, ids: new Set(pickByLimit(activeFormulas, limit, want).map(f => f.id)) };
+      }
+      activeFormulas = activeFormulas.filter(f => speciesPick.ids.has(f.id));
+    }
     const activeFormulaIds = new Set(activeFormulas.map(f => f.id));
     // 症状は「正解の方剤」がテーマに含まれるものだけ
     const activeSymptoms = symptoms.filter(s => activeFormulaIds.has(primaryFormulaId(s)));
@@ -835,7 +912,8 @@
     if (ids.length === 0) { el.textContent = ""; return; }
     const sel = themeSelection(ids);
     const herbTotal = sel.herbIds.reduce((sum, id) => sum + herbCountOf(id), 0);
-    const aux = deckPrefs.harvest + deckPrefs.daishukaku + (deckPrefs.jama || 0) + (deckPrefs.visitor || 0);
+    const aux = deckPrefs.harvest + deckPrefs.daishukaku + (deckPrefs.shinno || 0)
+              + (deckPrefs.jama || 0) + (deckPrefs.visitor || 0);
     el.textContent = `デッキ合計 ${herbTotal + aux} 枚（生薬 ${herbTotal} ＋ 補助・お邪魔 ${aux}）`;
   }
 
@@ -867,7 +945,18 @@
               <button type="button" class="de-step" data-card="daishukaku" data-delta="1">＋</button>
             </span>
           </div>
+          <div class="de-section-title">書物カード</div>
+          <div class="deck-editor-row${isLocked("shinno") ? " de-locked" : ""}">
+            <span class="de-name"><span class="de-titleline">📜 神農本草経<span class="de-max">（${isLocked("shinno") ? "本作のみ" : `最大${CONFIG.deckCardMax}枚`}）</span></span><span class="de-desc">山札に無い生薬を${CONFIG.shinnoPick}枚まで山札に加える（収穫カードで指名して手札へ）${lockedSuffix("shinno")}</span></span>
+            <span class="de-stepper">
+              <button type="button" class="de-step" data-card="shinno" data-delta="-1"${isLocked("shinno") ? " disabled" : ""}>−</button>
+              <b id="de-shinno">${isLocked("shinno") ? 0 : (deckPrefs.shinno || 0)}</b>
+              <button type="button" class="de-step" data-card="shinno" data-delta="1"${isLocked("shinno") ? " disabled" : ""}>＋</button>
+            </span>
+          </div>
+
           ${showJama ? `
+          <div class="de-section-title">補助カード（対戦専用）</div>
           <div class="deck-editor-row${isLocked("visitor") ? " de-locked" : ""}">
             <span class="de-name"><span class="de-titleline">🐈 静かなる来訪者<span class="de-max">（${isLocked("visitor") ? "対戦専用" : `対戦専用・最大${CONFIG.deckCardMax}枚`}）</span></span><span class="de-desc">${CONFIG.visitorCost}点を払ってお邪魔カードを1回防ぐ${lockedSuffix("visitor")}</span></span>
             <span class="de-stepper">
@@ -986,6 +1075,10 @@
 
   function showStartScreen() {
     const app = $("#app");
+    // 顔ぶれを選び直す（生薬でしばる設定のとき）。遊ぶたびに違う組み合わせが出るように。
+    resetSpeciesPick();
+    // 顔ぶれが変われば使う生薬も変わるので、デッキの枚数も「おまかせ」で取り直す
+    if (speciesLimit && selectedThemes.length > 0) deckPrefs.herbs = guaranteeCounts(selectedThemes);
     // CPU対戦では、あなたも「招かれざる客／来訪者」を使える。デッキ編集に出すため既定枚数を用意（未設定なら）。
     if (selectedMode === "cpu") {
       if (!Number.isFinite(deckPrefs.jama)) deckPrefs.jama = CONFIG.jamaCardCopies;
@@ -1064,6 +1157,19 @@
             <button type="button" class="rounds-step" data-delta="1">＋</button>
           </span>
         </div>
+        <div class="rounds-editor">
+          <span class="rounds-name">
+            <span class="rounds-title">
+              <label class="species-toggle"><input type="checkbox" id="species-on" ${speciesLimit ? "checked" : ""}>🌿 生薬の種類でしばる</label>
+            </span>
+            <span class="rounds-desc">使う生薬を減らすほど、生薬の近い方剤（類方）だけが集まって組みやすくなります。テーマを全部選んでも遊べます。</span>
+          </span>
+          <span class="de-stepper ${speciesLimit ? "" : "stepper-off"}" id="species-stepper">
+            <button type="button" class="species-step" data-delta="-${CONFIG.speciesStep}">−</button>
+            <b id="species-val">${speciesValue}</b>
+            <button type="button" class="species-step" data-delta="${CONFIG.speciesStep}">＋</button>
+          </span>
+        </div>
         ${selectedMode !== "vs" ? deckEditorHTML(selectedMode === "cpu") : `
         <p class="vs-setup-hint">対戦では、このあと<b>各プレイヤーが自分の名前とデッキ</b>を設定します（相手には見えません）。</p>`}
         <p class="start-note" id="start-note"></p>
@@ -1086,7 +1192,10 @@
       }
       const sel = themeSelection(ids);
       const rounds = Math.min(sel.activeSymptoms.length, selectedRounds);
-      note.textContent = `お題 ${rounds} 問／デッキに入る生薬 ${sel.herbIds.length} 種（全${herbs.length}種中）`;
+      let msg = `お題 ${rounds} 問／デッキに入る生薬 ${sel.herbIds.length} 種（全${herbs.length}種中）`;
+      // 生薬をしぼりすぎると、お題に使える方剤が足りなくなる。始める前に見えるようにしておく。
+      if (rounds < selectedRounds) msg += `　⚠ この設定では ${rounds} 問までしか出せません（生薬を増やすとお題も増えます）`;
+      note.textContent = msg;
       if (btn) btn.disabled = false;
     };
 
@@ -1127,7 +1236,27 @@
       const next = selectedRounds + Number(b.dataset.delta);
       selectedRounds = Math.max(ROUNDS_MIN, Math.min(CONFIG.maxRounds, next));
       const el = $("#rounds-val"); if (el) el.textContent = selectedRounds;
-      updateStartNote();   // お題数表示だけ更新（デッキは触らない）
+      // 生薬でしばっているときは、お題数が変わると顔ぶれ（＝使う生薬）も変わるのでデッキごと作り直す
+      if (speciesLimit) refresh(); else updateStartNote();   // しばりなしならデッキは触らない
+    }));
+    // 生薬の種類でしばる：スイッチ
+    const speciesBox = $("#species-on");
+    if (speciesBox) speciesBox.addEventListener("change", () => {
+      speciesLimit = speciesBox.checked ? speciesValue : null;
+      resetSpeciesPick();          // 顔ぶれを選び直す
+      const st = $("#species-stepper");
+      if (st) st.classList.toggle("stepper-off", !speciesLimit);
+      refresh();                   // 生薬が変わるのでデッキ編集ごと作り直す
+    });
+    // 生薬の種類でしばる：±ボタン
+    app.querySelectorAll(".species-step").forEach(b => b.addEventListener("click", () => {
+      if (!speciesLimit) return;   // スイッチが切れているときは動かさない
+      const next = speciesValue + Number(b.dataset.delta);
+      speciesValue = Math.max(CONFIG.speciesMin, Math.min(CONFIG.speciesMax, next));
+      speciesLimit = speciesValue;
+      const el = $("#species-val"); if (el) el.textContent = speciesValue;
+      resetSpeciesPick();
+      refresh();
     }));
     app.querySelectorAll(".theme-check").forEach(el => el.addEventListener("change", refresh));
     app.querySelectorAll("[data-detail]").forEach(b => b.addEventListener("click", (e) => {
@@ -1654,6 +1783,7 @@
 
 
   // ドロー：1手番に1回だけ2枚引く（手札は一時的に handHard まで持てる）
+
   // 収穫カードを使う：山札にある生薬を指名して手札に加えるモーダルを開く
   function openHarvestPicker(cardUid) {
     if (state.finished) return;
@@ -1889,7 +2019,8 @@
       : card.id === "act:jama" ? "action-jama"
       : "action-harvest";
     const anim = drawIndex != null ? ` just-drawn" style="--dd:${drawIndex * 110}ms` : "";
-    const badge = card.id === "act:jama" ? "お邪魔カード" : "補助カード";
+    const badge = card.id === "act:jama" ? "お邪魔カード"
+      : "補助カード";
     return `
       <div class="herb-card action-card ${kind}${anim}" data-uid="${card.uid}">
         <div class="herb-top"><span class="action-badge">${badge}</span></div>
